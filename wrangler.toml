@@ -1,0 +1,35 @@
+name = "sol-integrate"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[dev]
+ip = "0.0.0.0"
+port = 8789
+
+[vars]
+ENVIRONMENT = "development"
+# API_KEY, SOL_API_URL, SOL_API_KEY, SOL_NOTIFY_URL, SOL_NOTIFY_API_KEY are Cloudflare Secrets — not set here
+
+[observability]
+enabled = true
+
+[env.staging]
+name = "sol-integrate-staging"
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+# API_KEY, SOL_API_URL, SOL_API_KEY, SOL_NOTIFY_URL, SOL_NOTIFY_API_KEY are Cloudflare Secrets — not set here
+
+[env.staging.observability]
+enabled = true
+
+[env.production]
+name = "sol-integrate"
+
+[env.production.vars]
+ENVIRONMENT = "production"
+# API_KEY, SOL_API_URL, SOL_API_KEY, SOL_NOTIFY_URL, SOL_NOTIFY_API_KEY are Cloudflare Secrets — not set here
+
+[env.production.observability]
+enabled = true

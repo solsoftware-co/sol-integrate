@@ -1,0 +1,6 @@
+API_KEY=dev-local-key
+ENVIRONMENT=development
+SOL_API_URL=http://localhost:8787
+SOL_API_KEY=dev-local-key
+SOL_NOTIFY_URL=http://localhost:8788
+SOL_NOTIFY_API_KEY=dev-local-key
