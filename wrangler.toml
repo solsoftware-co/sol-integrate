@@ -1,0 +1,57 @@
+name = "sol-integrate"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[dev]
+ip = "0.0.0.0"
+port = 8789
+
+[vars]
+ENVIRONMENT = "development"
+# API_KEY, SOL_API_KEY are Cloudflare Secrets — not set here
+
+# sol-api is reached through a service binding (env.SOL_API), not a URL —
+# a plain fetch() to another Worker on the same workers.dev subdomain fails
+# with "error code: 1042" (same as sol-notify). Bindings aren't inherited, so
+# each environment declares its own. Locally, `wrangler dev` connects this to
+# sol-api's own `wrangler dev` session (Worker name "sol-api") when running.
+[[services]]
+binding = "SOL_API"
+service = "sol-api"
+
+[observability]
+enabled = true
+
+# Staging and production are internal-only: no workers.dev URL, reachable
+# only through a service binding from Sol Gate (SOL-38). X-API-Key is still
+# checked as a second layer.
+[env.staging]
+name = "sol-integrate-staging"
+workers_dev = false
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+# API_KEY, SOL_API_KEY are Cloudflare Secrets — not set here
+
+[[env.staging.services]]
+binding = "SOL_API"
+service = "sol-api-staging"
+
+[env.staging.observability]
+enabled = true
+
+[env.production]
+name = "sol-integrate"
+workers_dev = false
+
+[env.production.vars]
+ENVIRONMENT = "production"
+# API_KEY, SOL_API_KEY are Cloudflare Secrets — not set here
+
+[[env.production.services]]
+binding = "SOL_API"
+service = "sol-api"
+
+[env.production.observability]
+enabled = true
