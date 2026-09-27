@@ -1,6 +1,7 @@
 // Typed HTTP client for sol-api. This service holds no database of its own —
 // integration config (including credentials) and the audit-log trail both
-// live behind sol-api, reached over HTTP with X-API-Key auth.
+// live behind sol-api, reached through the SOL_API service binding (see
+// wrangler.toml) with X-API-Key auth.
 
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -15,8 +16,12 @@ export class SolApiNotFoundError extends Error {
   }
 }
 
+// Requests go through the binding, never the public internet — the host in
+// this base URL is ignored by a service binding; only the path matters.
+const BINDING_BASE_URL = "https://sol-api";
+
 async function solApiFetch<T>(
-  baseUrl: string,
+  solApi: Fetcher,
   apiKey: string,
   path: string,
   init?: RequestInit
@@ -26,7 +31,7 @@ async function solApiFetch<T>(
 
   let response: Response;
   try {
-    response = await fetch(`${baseUrl}${path}`, {
+    response = await solApi.fetch(`${BINDING_BASE_URL}${path}`, {
       ...init,
       headers: {
         "X-API-Key": apiKey,
@@ -39,7 +44,16 @@ async function solApiFetch<T>(
     clearTimeout(timeout);
   }
 
-  const body = (await response.json()) as ApiEnvelope<T>;
+  // Read as text first so a non-JSON response (e.g. a Cloudflare error page
+  // like "error code: 1042") surfaces with its status and body, rather than
+  // as an opaque JSON SyntaxError.
+  const text = await response.text();
+  let body: ApiEnvelope<T>;
+  try {
+    body = JSON.parse(text) as ApiEnvelope<T>;
+  } catch {
+    throw new Error(`sol-api returned non-JSON (HTTP ${response.status}): ${text.slice(0, 200).trim()}`);
+  }
 
   if (!body.success) {
     if (response.status === 404) {
@@ -78,13 +92,13 @@ export interface MailchimpIntegration extends IntegrationBase {
 export type Integration = MailchimpIntegration | IntegrationBase;
 
 export async function getIntegration(
-  baseUrl: string,
+  solApi: Fetcher,
   apiKey: string,
   clientId: string,
   integrationId: string
 ): Promise<Integration> {
   return solApiFetch<Integration>(
-    baseUrl,
+    solApi,
     apiKey,
     `/v1/clients/${encodeURIComponent(clientId)}/integrations/${encodeURIComponent(integrationId)}`
   );
@@ -101,11 +115,11 @@ export interface NotificationLogEntry {
 }
 
 export async function writeNotificationLog(
-  baseUrl: string,
+  solApi: Fetcher,
   apiKey: string,
   entry: NotificationLogEntry
 ): Promise<void> {
-  await solApiFetch<unknown>(baseUrl, apiKey, "/v1/notification-logs", {
+  await solApiFetch<unknown>(solApi, apiKey, "/v1/notification-logs", {
     method: "POST",
     body: JSON.stringify(entry),
   });

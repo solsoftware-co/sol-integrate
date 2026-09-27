@@ -1,11 +1,15 @@
 import { z } from "zod";
 
-// Mailchimp's field shape is fixed (unlike Google Sheets, SOL-10, whose
-// required fields depend on each integration's stored column_mapping), so it
-// can be validated as part of the envelope itself, before the integration
-// config is ever fetched — the discriminated union on `type` picks the right
-// fields schema. `mergeFields` keys are the audience's merge tags as-is
-// (FNAME, LNAME, PHONE, or any custom tag).
+// This service is internal-only: its sole caller is Sol Gate (SOL-38), which
+// has already validated the public submission against the form's
+// payload_schema and mapped it into this integration's shape via
+// form_integrations.field_mapping. Validation here guards the contract
+// between two services we own, not untrusted input.
+//
+// Mailchimp's field shape is fixed (unlike Google Sheets, SOL-10), so it's
+// validated as part of the envelope — the discriminated union on `type`
+// picks the right fields schema. `mergeFields` keys are the audience's merge
+// tags as-is (FNAME, LNAME, PHONE, or any custom tag).
 export const mailchimpFieldsSchema = z
   .object({
     email: z.string().email(),
@@ -16,20 +20,12 @@ export const mailchimpFieldsSchema = z
   })
   .strict();
 
-// Optional: when present, a successful write is followed by a
-// notification.requested POST to sol-notify. Omitted means "write only, no
-// notification needed". Shape mirrors the parts of sol-notify's email
-// envelope the caller actually decides — clientId/type/emailTemplate/fields
-// are filled in by this service.
-export const notificationDescriptorSchema = z.object({
-  recipients: z.array(z.string().min(1)).min(1),
-  subject: z.string().min(1),
-  cta: z
-    .object({
-      url: z.string().url(),
-      label: z.string().min(1).optional(),
-    })
-    .optional(),
+// Optional trace IDs from Sol Gate, stored in the notification_logs metadata
+// so one submission can be followed across Sol Gate, sol-integrate and
+// sol-notify.
+export const requestContextSchema = z.object({
+  formId: z.string().uuid(),
+  submissionId: z.string().min(1),
 });
 
 export const mailchimpEnvelopeSchema = z.object({
@@ -37,7 +33,7 @@ export const mailchimpEnvelopeSchema = z.object({
   type: z.literal("mailchimp"),
   integrationId: z.string().uuid(),
   fields: mailchimpFieldsSchema,
-  notification: notificationDescriptorSchema.optional(),
+  context: requestContextSchema.optional(),
 });
 
 // A one-member discriminated union today — SOL-10 appends a
@@ -46,6 +42,6 @@ export const mailchimpEnvelopeSchema = z.object({
 export const integrationRequestSchema = z.discriminatedUnion("type", [mailchimpEnvelopeSchema]);
 
 export type MailchimpFields = z.infer<typeof mailchimpFieldsSchema>;
-export type NotificationDescriptor = z.infer<typeof notificationDescriptorSchema>;
+export type RequestContext = z.infer<typeof requestContextSchema>;
 export type MailchimpEnvelope = z.infer<typeof mailchimpEnvelopeSchema>;
 export type IntegrationRequest = z.infer<typeof integrationRequestSchema>;

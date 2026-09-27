@@ -1,197 +1,140 @@
-import type { MailchimpEnvelope, MailchimpFields, NotificationDescriptor } from "../validators/integration.js";
-import { getIntegration, writeNotificationLog, type MailchimpConfig } from "../lib/sol-api.js";
-import { upsertListMember, isRetryableMailchimpError } from "../lib/mailchimp.js";
-import { requestNotification, isRetryableSolNotifyError } from "../lib/sol-notify.js";
+import type { MailchimpEnvelope } from "../validators/integration.js";
+import { getIntegration, writeNotificationLog, SolApiNotFoundError, type MailchimpConfig } from "../lib/sol-api.js";
+import {
+  upsertListMember,
+  mockUpsertListMember,
+  isRetryableMailchimpError,
+  describeMailchimpError,
+  memberUrl,
+  audienceUrl,
+} from "../lib/mailchimp.js";
+import type { Environment } from "../lib/environment.js";
 import { withRetry } from "../lib/retry.js";
 import { logger } from "../lib/logger.js";
 
-type SolApiEnv = { SOL_API_URL: string; SOL_API_KEY: string };
-type DeliverEnv = SolApiEnv & { SOL_NOTIFY_URL: string; SOL_NOTIFY_API_KEY: string };
+type SolApiEnv = { SOL_API: Fetcher; SOL_API_KEY: string };
 
 const WORKFLOW = "integration-service";
 const EVENT_NAME = "mailchimp.upsert_member";
 
-// The integration exists in sol-api but can't be written to: wrong type for
-// this envelope, not active, or missing its mailchimp_integrations child row.
-// Treated the same as not-found — the board's "Integration found? → no" path.
-export class IntegrationUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "IntegrationUnavailableError";
-  }
+// One uniform result per integration, returned to Sol Gate for the
+// form_submission email's results table (SOL-34). `detail` ends up in a
+// client-facing email: short, readable, never credentials.
+export interface IntegrationResult {
+  outcome: "succeeded" | "failed" | "skipped";
+  url?: string;
+  detail?: string;
+  memberId?: string;
 }
 
-export interface PreparedMailchimpWrite {
-  clientId: string;
-  integrationId: string;
-  config: MailchimpConfig;
-  fields: MailchimpFields;
-  notification?: NotificationDescriptor;
+export interface MailchimpWriteRun {
+  result: IntegrationResult;
+  /** Internal error for the audit log only — may be technical, never returned to the caller. */
+  errorMessage?: string;
 }
 
-// Synchronous half: fetch the integration config and confirm it's usable.
-// Propagates SolApiNotFoundError / IntegrationUnavailableError so the route
-// can surface a 404 immediately — a caller pointing at the wrong integration
-// is a "this request is broken" condition, not something to defer.
-export async function prepareMailchimpWrite(
+type MailchimpIntegrationLookup =
+  | { usable: true; config: MailchimpConfig }
+  | { usable: false; run: MailchimpWriteRun };
+
+// The board's "Integration found?" step. Not found, the wrong type, not
+// active, or missing its Mailchimp child row all mean "skipped" — the form
+// is misconfigured, not the submission. sol-api being unreachable is
+// "failed" instead: the integration may be fine, we just couldn't load it.
+async function lookUpMailchimpIntegration(
   env: SolApiEnv,
   envelope: MailchimpEnvelope
-): Promise<PreparedMailchimpWrite> {
-  const integration = await getIntegration(env.SOL_API_URL, env.SOL_API_KEY, envelope.clientId, envelope.integrationId);
+): Promise<MailchimpIntegrationLookup> {
+  const skip = (detail: string): MailchimpIntegrationLookup => ({
+    usable: false,
+    run: { result: { outcome: "skipped", detail } },
+  });
+
+  let integration;
+  try {
+    integration = await getIntegration(env.SOL_API, env.SOL_API_KEY, envelope.clientId, envelope.integrationId);
+  } catch (err) {
+    if (err instanceof SolApiNotFoundError) return skip("Integration not found");
+    return {
+      usable: false,
+      run: {
+        result: { outcome: "failed", detail: "Couldn't load the integration's settings" },
+        errorMessage: err instanceof Error ? err.message : String(err),
+      },
+    };
+  }
 
   if (integration.type !== "mailchimp") {
-    throw new IntegrationUnavailableError(
-      `Integration ${envelope.integrationId} is type "${integration.type}", not "mailchimp"`
-    );
+    return skip(`Integration is a ${integration.type} integration, not Mailchimp`);
   }
   if (integration.status !== "active") {
-    throw new IntegrationUnavailableError(
-      `Integration ${envelope.integrationId} is not active (status: ${integration.status})`
-    );
+    return skip(`Integration is not active (status: ${integration.status})`);
   }
   if (!("mailchimp" in integration) || !integration.mailchimp) {
-    throw new IntegrationUnavailableError(`Integration ${envelope.integrationId} has no Mailchimp config`);
+    return skip("Integration has no Mailchimp settings configured");
   }
-
-  return {
-    clientId: envelope.clientId,
-    integrationId: envelope.integrationId,
-    config: integration.mailchimp,
-    fields: envelope.fields,
-    notification: envelope.notification,
-  };
+  return { usable: true, config: integration.mailchimp };
 }
 
-// Backgrounded half: called from inside ctx.waitUntil(), after the response
-// has already been sent. Write (retried, except permanent 4xx) → log outcome
-// → on success, hand off to sol-notify if a notification was requested.
-export async function deliverMailchimpWrite(env: DeliverEnv, prepared: PreparedMailchimpWrite): Promise<void> {
-  let memberId: string;
+// Performs the write and returns its outcome. Never throws for an expected
+// failure — Sol Gate needs a result for every integration, whatever happened.
+export async function runMailchimpWrite(
+  env: SolApiEnv & { ENVIRONMENT: Environment },
+  envelope: MailchimpEnvelope
+): Promise<MailchimpWriteRun> {
+  const mailchimpIntegration = await lookUpMailchimpIntegration(env, envelope);
+  if (!mailchimpIntegration.usable) return mailchimpIntegration.run;
+
+  const { config } = mailchimpIntegration;
+  const upsert = env.ENVIRONMENT === "development" ? mockUpsertListMember : upsertListMember;
+
   try {
-    ({ memberId } = await withRetry(() => upsertListMember(prepared.config, prepared.fields), {
+    const member = await withRetry(() => upsert(config, envelope.fields), {
+      attempts: 2,
       shouldRetry: isRetryableMailchimpError,
-    }));
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    logger.error("mailchimp write failed permanently", {
-      clientId: prepared.clientId,
-      integrationId: prepared.integrationId,
-      errorMessage: message,
     });
-    await logOutcome(env, prepared.clientId, "failed", {
-      errorMessage: message,
-      metadata: writeMetadata(prepared),
-    });
-    return;
-  }
-
-  await logOutcome(env, prepared.clientId, "succeeded", {
-    metadata: { ...writeMetadata(prepared), memberId },
-  });
-
-  await notify(env, prepared);
-}
-
-// Board's "Integration found? → no → Skip + log" — the route has already
-// responded 404; this just leaves the audit trail. Best-effort like every
-// other log write (and will fail outright if clientId itself doesn't exist,
-// since notification_logs.client_id is a foreign key).
-export async function logSkippedWrite(
-  env: SolApiEnv,
-  envelope: MailchimpEnvelope,
-  reason: string
-): Promise<void> {
-  await logOutcome(env, envelope.clientId, "skipped", {
-    errorMessage: reason,
-    metadata: { integrationId: envelope.integrationId, email: envelope.fields.email },
-  });
-}
-
-// No notification descriptor means "write only" — the board's
-// "Notification descriptor provided? → no → Done" path.
-async function notify(
-  env: DeliverEnv,
-  { clientId, integrationId, fields, notification }: PreparedMailchimpWrite
-): Promise<void> {
-  if (!notification) return;
-
-  try {
-    await withRetry(
-      () =>
-        requestNotification(env.SOL_NOTIFY_URL, env.SOL_NOTIFY_API_KEY, {
-          clientId,
-          type: "email",
-          recipients: notification.recipients,
-          subject: notification.subject,
-          emailTemplate: "mailchimp_confirmation",
-          fields: toNotificationFields(fields),
-          ...(notification.cta && { cta: notification.cta }),
-        }),
-      { shouldRetry: isRetryableSolNotifyError }
-    );
+    return {
+      result: {
+        outcome: "succeeded",
+        url: member.webId ? memberUrl(config, member.webId) : audienceUrl(config),
+        memberId: member.memberId,
+      },
+    };
   } catch (err) {
-    // The Mailchimp write itself already succeeded and is logged as such —
-    // a failed hand-off doesn't change that outcome, so console only.
-    // sol-notify logs its own delivery outcomes once it has accepted.
-    logger.error("failed to request notification from sol-notify", {
-      clientId,
-      integrationId,
+    return {
+      result: { outcome: "failed", url: audienceUrl(config), detail: describeMailchimpError(err) },
       errorMessage: err instanceof Error ? err.message : String(err),
-    });
+    };
   }
 }
 
-// Mailchimp's default merge tags, given readable labels — mailchimp_confirmation
-// renders `fields` keys verbatim as labels. Custom tags pass through as-is.
-const MERGE_TAG_LABELS: Record<string, string> = {
-  FNAME: "First name",
-  LNAME: "Last name",
-  PHONE: "Phone",
-  ADDRESS: "Address",
-  BIRTHDAY: "Birthday",
-};
-
-export function toNotificationFields(fields: MailchimpFields): Record<string, string> {
-  const result: Record<string, string> = { Email: fields.email };
-  for (const [tag, value] of Object.entries(fields.mergeFields ?? {})) {
-    result[MERGE_TAG_LABELS[tag] ?? tag] = value;
-  }
-  if (fields.tags?.length) {
-    result.Tags = fields.tags.join(", ");
-  }
-  return result;
-}
-
-function writeMetadata(prepared: PreparedMailchimpWrite): Record<string, unknown> {
-  return {
-    integrationId: prepared.integrationId,
-    listId: prepared.config.listId,
-    email: prepared.fields.email,
-    tags: prepared.fields.tags ?? [],
-  };
-}
-
-async function logOutcome(
-  env: SolApiEnv,
-  clientId: string,
-  outcome: "succeeded" | "failed" | "skipped",
-  extra: { errorMessage?: string; metadata: Record<string, unknown> }
-): Promise<void> {
+// Best-effort audit trail — called from waitUntil() after the outcome has
+// been returned, so a slow or failing log write never delays Sol Gate. A
+// failure is logged to console, never re-thrown (and will fail outright if
+// clientId itself doesn't exist, since notification_logs.client_id is a
+// foreign key).
+export async function logWriteOutcome(env: SolApiEnv, envelope: MailchimpEnvelope, run: MailchimpWriteRun): Promise<void> {
   try {
     await withRetry(() =>
-      writeNotificationLog(env.SOL_API_URL, env.SOL_API_KEY, {
-        clientId,
+      writeNotificationLog(env.SOL_API, env.SOL_API_KEY, {
+        clientId: envelope.clientId,
         workflow: WORKFLOW,
         eventName: EVENT_NAME,
-        outcome,
+        outcome: run.result.outcome,
         type: "mailchimp",
-        errorMessage: extra.errorMessage ?? null,
-        metadata: extra.metadata,
+        errorMessage: run.errorMessage ?? run.result.detail ?? null,
+        metadata: {
+          integrationId: envelope.integrationId,
+          email: envelope.fields.email,
+          tags: envelope.fields.tags ?? [],
+          ...(run.result.memberId && { memberId: run.result.memberId }),
+          ...(envelope.context && { formId: envelope.context.formId, submissionId: envelope.context.submissionId }),
+        },
       })
     );
   } catch (logErr) {
     logger.error("failed to write integration log to sol-api", {
-      clientId,
+      clientId: envelope.clientId,
       errorMessage: logErr instanceof Error ? logErr.message : String(logErr),
     });
   }

@@ -90,10 +90,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           echo "${{ secrets.API_KEY_STAGING }}" | npx wrangler secret put API_KEY --env staging
-          echo "${{ secrets.SOL_API_URL_STAGING }}" | npx wrangler secret put SOL_API_URL --env staging
           echo "${{ secrets.SOL_API_KEY_STAGING }}" | npx wrangler secret put SOL_API_KEY --env staging
-          echo "${{ secrets.SOL_NOTIFY_URL_STAGING }}" | npx wrangler secret put SOL_NOTIFY_URL --env staging
-          echo "${{ secrets.SOL_NOTIFY_API_KEY_STAGING }}" | npx wrangler secret put SOL_NOTIFY_API_KEY --env staging
 
   # Gated by the "production" GitHub Environment — requires manual approval
   # (Settings → Environments → production) before this job starts. Depends
@@ -123,7 +120,4 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           echo "${{ secrets.API_KEY_PRODUCTION }}" | npx wrangler secret put API_KEY --env production
-          echo "${{ secrets.SOL_API_URL_PRODUCTION }}" | npx wrangler secret put SOL_API_URL --env production
           echo "${{ secrets.SOL_API_KEY_PRODUCTION }}" | npx wrangler secret put SOL_API_KEY --env production
-          echo "${{ secrets.SOL_NOTIFY_URL_PRODUCTION }}" | npx wrangler secret put SOL_NOTIFY_URL --env production
-          echo "${{ secrets.SOL_NOTIFY_API_KEY_PRODUCTION }}" | npx wrangler secret put SOL_NOTIFY_API_KEY --env production

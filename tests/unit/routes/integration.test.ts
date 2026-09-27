@@ -1,32 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const prepareMock = vi.fn();
-const deliverMock = vi.fn();
-const logSkippedMock = vi.fn();
+const runMock = vi.fn();
+const logMock = vi.fn();
 vi.mock("../../../src/services/mailchimp-integration.js", async () => {
   const actual = await vi.importActual<typeof import("../../../src/services/mailchimp-integration.js")>(
     "../../../src/services/mailchimp-integration.js"
   );
   return {
     ...actual,
-    prepareMailchimpWrite: (...args: unknown[]) => prepareMock(...args),
-    deliverMailchimpWrite: (...args: unknown[]) => deliverMock(...args),
-    logSkippedWrite: (...args: unknown[]) => logSkippedMock(...args),
+    runMailchimpWrite: (...args: unknown[]) => runMock(...args),
+    logWriteOutcome: (...args: unknown[]) => logMock(...args),
   };
 });
 
 const { default: app } = await import("../../../src/index.js");
-const { IntegrationUnavailableError } = await import("../../../src/services/mailchimp-integration.js");
-const { SolApiNotFoundError } = await import("../../../src/lib/sol-api.js");
 
-const ENV = {
-  API_KEY: "test-api-key",
-  ENVIRONMENT: "development",
-  SOL_API_URL: "https://sol-api.test",
-  SOL_API_KEY: "sol-key",
-  SOL_NOTIFY_URL: "https://sol-notify.test",
-  SOL_NOTIFY_API_KEY: "notify-key",
-};
+const SOL_API = {} as Fetcher;
+const ENV = { API_KEY: "test-api-key", ENVIRONMENT: "staging", SOL_API, SOL_API_KEY: "sol-key" };
 
 const body = {
   clientId: "acme-corp",
@@ -35,76 +25,86 @@ const body = {
   fields: { email: "jane@example.com" },
 };
 
-function post(payload: unknown, headers: Record<string, string> = { "X-API-Key": "test-api-key" }) {
+async function post(payload: unknown, opts: { headers?: Record<string, string>; env?: Record<string, unknown> } = {}) {
   const waitUntil = vi.fn();
   const ctx = { waitUntil, passThroughOnException: vi.fn() } as unknown as ExecutionContext;
-  const res = app.request(
+  const res = await app.request(
     "/",
-    { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(payload) },
-    ENV,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(opts.headers ?? { "X-API-Key": "test-api-key" }) },
+      body: JSON.stringify(payload),
+    },
+    { ...ENV, ...opts.env },
     ctx
   );
   return { res, waitUntil };
 }
 
 beforeEach(() => {
-  prepareMock.mockReset();
-  deliverMock.mockReset().mockResolvedValue(undefined);
-  logSkippedMock.mockReset().mockResolvedValue(undefined);
+  runMock.mockReset();
+  logMock.mockReset().mockResolvedValue(undefined);
 });
 
 describe("POST /", () => {
   it("401s without the API key", async () => {
-    const { res } = post(body, {});
-    expect((await res).status).toBe(401);
+    const { res } = await post(body, { headers: {} });
+    expect(res.status).toBe(401);
   });
 
-  it("422s on an invalid envelope", async () => {
-    const { res } = post({ ...body, fields: {} });
-    const r = await res;
-    expect(r.status).toBe(422);
-    expect(prepareMock).not.toHaveBeenCalled();
+  it("500s every request on an invalid ENVIRONMENT", async () => {
+    const { res } = await post(body, { env: { ENVIRONMENT: "prod" } });
+    expect(res.status).toBe(500);
+    expect(runMock).not.toHaveBeenCalled();
   });
 
-  it("202s and backgrounds the write for a valid envelope", async () => {
-    prepareMock.mockResolvedValue({ clientId: "acme-corp", integrationId: body.integrationId });
-    const { res, waitUntil } = post(body);
-    const r = await res;
+  it("422s on a malformed request", async () => {
+    const { res } = await post({ ...body, fields: {} });
+    expect(res.status).toBe(422);
+    expect(runMock).not.toHaveBeenCalled();
+  });
 
-    expect(r.status).toBe(202);
-    expect(await r.json()).toEqual({ success: true, data: { accepted: true } });
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-    expect(deliverMock).toHaveBeenCalledWith(
-      {
-        SOL_API_URL: "https://sol-api.test",
-        SOL_API_KEY: "sol-key",
-        SOL_NOTIFY_URL: "https://sol-notify.test",
-        SOL_NOTIFY_API_KEY: "notify-key",
-      },
-      { clientId: "acme-corp", integrationId: body.integrationId }
+  it.each([
+    { outcome: "succeeded", url: "https://us21.admin.mailchimp.com/lists/members/view?id=1", memberId: "member-1" },
+    { outcome: "failed", url: "https://us21.admin.mailchimp.com/lists/", detail: "Invalid Resource" },
+    { outcome: "skipped", detail: "Integration not found" },
+  ])("returns 200 with the $outcome result", async (result) => {
+    runMock.mockResolvedValue({ result });
+
+    const { res } = await post(body);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, data: result });
+  });
+
+  it("never returns the internal error message to the caller", async () => {
+    runMock.mockResolvedValue({
+      result: { outcome: "failed", detail: "Couldn't load the integration's settings" },
+      errorMessage: "sol-api returned non-JSON (HTTP 530): error code: 1042",
+    });
+
+    const { res } = await post(body);
+
+    expect(JSON.stringify(await res.json())).not.toContain("1042");
+  });
+
+  it("passes the binding and parsed environment to the service, and logs in the background", async () => {
+    const run = { result: { outcome: "succeeded", memberId: "member-1" } };
+    runMock.mockResolvedValue(run);
+
+    const { waitUntil } = await post(body);
+
+    expect(runMock).toHaveBeenCalledWith(
+      { SOL_API, SOL_API_KEY: "sol-key", ENVIRONMENT: "staging" },
+      expect.objectContaining(body)
     );
-  });
-
-  it("404s and logs a skip when the integration doesn't exist", async () => {
-    prepareMock.mockRejectedValue(new SolApiNotFoundError("Integration not found"));
-    const { res, waitUntil } = post(body);
-    const r = await res;
-
-    expect(r.status).toBe(404);
     expect(waitUntil).toHaveBeenCalledTimes(1);
-    expect(logSkippedMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining(body), "Integration not found");
-    expect(deliverMock).not.toHaveBeenCalled();
+    expect(logMock).toHaveBeenCalledWith({ SOL_API, SOL_API_KEY: "sol-key" }, expect.objectContaining(body), run);
   });
 
-  it("404s when the integration is unusable (wrong type / inactive)", async () => {
-    prepareMock.mockRejectedValue(new IntegrationUnavailableError("Integration is not active"));
-    const { res } = post(body);
-    expect((await res).status).toBe(404);
-  });
-
-  it("500s on an unexpected sol-api failure", async () => {
-    prepareMock.mockRejectedValue(new Error("sol-api exploded"));
-    const { res } = post(body);
-    expect((await res).status).toBe(500);
+  it("500s on an unexpected error", async () => {
+    runMock.mockRejectedValue(new Error("boom"));
+    const { res } = await post(body);
+    expect(res.status).toBe(500);
   });
 });

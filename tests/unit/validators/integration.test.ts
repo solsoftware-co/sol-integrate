@@ -13,7 +13,7 @@ describe("integrationRequestSchema", () => {
     expect(integrationRequestSchema.safeParse(valid).success).toBe(true);
   });
 
-  it("accepts merge fields, tags, statusIfNew and a notification descriptor", () => {
+  it("accepts merge fields, tags, statusIfNew and trace context", () => {
     const result = integrationRequestSchema.safeParse({
       ...valid,
       fields: {
@@ -22,11 +22,7 @@ describe("integrationRequestSchema", () => {
         tags: ["website-signup"],
         statusIfNew: "pending",
       },
-      notification: {
-        recipients: ["sales@acme.com"],
-        subject: "New Mailchimp subscriber",
-        cta: { url: "https://mailchimp.com/audience" },
-      },
+      context: { formId: "0b8e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b", submissionId: "sub_123" },
     });
     expect(result.success).toBe(true);
   });
@@ -50,9 +46,19 @@ describe("integrationRequestSchema", () => {
     ).toBe(false);
   });
 
-  it("rejects a notification descriptor with no recipients", () => {
+  it("rejects a context with a non-uuid formId", () => {
     expect(
-      integrationRequestSchema.safeParse({ ...valid, notification: { recipients: [], subject: "x" } }).success
+      integrationRequestSchema.safeParse({ ...valid, context: { formId: "form-1", submissionId: "sub_123" } }).success
     ).toBe(false);
+  });
+
+  // Notifications moved to Sol Gate (SOL-33) — an old-style block is dropped, never acted on.
+  it("strips a notification block rather than acting on it", () => {
+    const result = integrationRequestSchema.safeParse({
+      ...valid,
+      notification: { recipients: ["sales@acme.com"], subject: "x" },
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && "notification" in result.data).toBe(false);
   });
 });

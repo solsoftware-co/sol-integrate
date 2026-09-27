@@ -1,74 +1,50 @@
 import { Hono } from "hono";
 import { integrationRequestSchema } from "../validators/integration.js";
-import {
-  prepareMailchimpWrite,
-  deliverMailchimpWrite,
-  logSkippedWrite,
-  IntegrationUnavailableError,
-} from "../services/mailchimp-integration.js";
-import { SolApiNotFoundError } from "../lib/sol-api.js";
-import { notFoundResponse, validationErrorResponse } from "../lib/responses.js";
+import { runMailchimpWrite, logWriteOutcome } from "../services/mailchimp-integration.js";
+import { parseEnvironment } from "../lib/environment.js";
+import { validationErrorResponse } from "../lib/responses.js";
 import { logger } from "../lib/logger.js";
 import type { AppEnv } from "../types/index.js";
 
 const integration = new Hono<AppEnv>();
 
+// Called only by Sol Gate, from inside its own backgrounded work after it
+// has already answered the browser — so this route performs the write and
+// returns the outcome, rather than acknowledging and deferring it. Every
+// outcome (succeeded / failed / skipped) is a 200: a failed write is a valid
+// result for Sol Gate to report, not a broken request. 422 is reserved for
+// a malformed request.
 integration.post("/", async (c) => {
   const body = await c.req.json().catch(() => null);
-  const result = integrationRequestSchema.safeParse(body);
+  const parsed = integrationRequestSchema.safeParse(body);
 
-  if (!result.success) {
-    return validationErrorResponse(c, "Validation failed", result.error.issues);
+  if (!parsed.success) {
+    return validationErrorResponse(c, "Validation failed", parsed.error.issues);
   }
 
   // Only member of the union today is the mailchimp envelope — SOL-10 adds a
   // google_sheets branch here once googleSheetsEnvelopeSchema exists.
-  const envelope = result.data;
+  const envelope = parsed.data;
+  const solApiEnv = { SOL_API: c.env.SOL_API, SOL_API_KEY: c.env.SOL_API_KEY };
 
-  const solApiEnv = {
-    SOL_API_URL: c.env.SOL_API_URL,
-    SOL_API_KEY: c.env.SOL_API_KEY,
-  };
-
-  let prepared;
-  try {
-    prepared = await prepareMailchimpWrite(solApiEnv, envelope);
-  } catch (err) {
-    if (err instanceof SolApiNotFoundError || err instanceof IntegrationUnavailableError) {
-      logger.warn("integration write skipped", {
-        requestId: c.get("requestId"),
-        clientId: envelope.clientId,
-        integrationId: envelope.integrationId,
-        reason: err.message,
-      });
-      c.executionCtx.waitUntil(logSkippedWrite(solApiEnv, envelope, err.message));
-      return notFoundResponse(c, err.message);
-    }
-    throw err;
-  }
-
-  logger.info("integration write accepted", {
-    requestId: c.get("requestId"),
-    clientId: prepared.clientId,
-    integrationId: prepared.integrationId,
-    type: envelope.type,
-  });
-
-  // Write + log + notify happen after the response is returned — client
-  // sites call this directly on form submit, so they shouldn't be blocked
-  // through Mailchimp latency or retry backoff. See src/lib/retry.ts.
-  c.executionCtx.waitUntil(
-    deliverMailchimpWrite(
-      {
-        ...solApiEnv,
-        SOL_NOTIFY_URL: c.env.SOL_NOTIFY_URL,
-        SOL_NOTIFY_API_KEY: c.env.SOL_NOTIFY_API_KEY,
-      },
-      prepared
-    )
+  const run = await runMailchimpWrite(
+    { ...solApiEnv, ENVIRONMENT: parseEnvironment(c.env.ENVIRONMENT) },
+    envelope
   );
 
-  return c.json({ success: true, data: { accepted: true } }, 202);
+  logger.info("integration write finished", {
+    requestId: c.get("requestId"),
+    clientId: envelope.clientId,
+    integrationId: envelope.integrationId,
+    type: envelope.type,
+    outcome: run.result.outcome,
+    ...(envelope.context && { formId: envelope.context.formId, submissionId: envelope.context.submissionId }),
+    ...(run.errorMessage && { errorMessage: run.errorMessage }),
+  });
+
+  c.executionCtx.waitUntil(logWriteOutcome(solApiEnv, envelope, run));
+
+  return c.json({ success: true, data: run.result }, 200);
 });
 
 export default integration;

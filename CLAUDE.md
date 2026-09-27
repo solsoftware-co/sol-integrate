@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-Active implementation (SOL-9, Mailchimp first pass). Ticket: https://linear.app/sol-software/issue/SOL-9 — flow is the "Integration Service -- Target Flow" frame on the design board (https://miro.com/app/board/uXjVHolYGyo=/). That frame draws the full target state (Mailchimp **and** Google Sheets branches); Google Sheets is SOL-10 and is not implemented here yet.
+Mailchimp first pass (SOL-9), realigned to the Sol Gate design (SOL-33). Tickets: https://linear.app/sol-software/issue/SOL-9, https://linear.app/sol-software/issue/SOL-33. Design: `sol-brain/sol-gate/` (Obsidian vault) — especially `decisions/decision-dumb-internal-services.md` and `02-architecture.md`. Google Sheets is SOL-10 and not implemented here yet.
+
+## Role
+
+**Internal-only.** The single caller is **Sol Gate** (SOL-38), the public front door for client-website form submissions. Sol Gate has already validated the submission against the form's `payload_schema` and mapped it into this integration's shape (`form_integrations.field_mapping`); this service just performs the write and reports what happened. It does **not** notify anyone — Sol Gate notifies the form's channels afterwards, including every integration's outcome (sol-notify's `form_submission` template, SOL-34).
 
 ## Commands
 
@@ -17,35 +21,42 @@ npm run deploy     # deploy to Cloudflare Workers
 
 ## Environments
 
-- **`development`** (local `npm run dev`) — real calls to whatever `SOL_API_URL` / `SOL_NOTIFY_URL` point at (sol-api on :8787, sol-notify on :8788 by default), and **real Mailchimp writes** against whatever credentials the integration row in that sol-api's database holds. There is no mock mode — point local sol-api at a database whose Mailchimp integrations use a test audience.
-- **`staging`** (`env.staging`, worker `sol-integrate-staging`) — deployed by `.github/workflows/release.yml` on every merge to `main`.
-- **`production`** (`env.production`, worker `sol-integrate`) — same workflow's `deploy-production` job, gated behind the `production` GitHub Environment (required reviewer), after `deploy-staging` succeeds.
+`ENVIRONMENT` must be one of `development | preview | staging | production` (`src/lib/environment.ts`, same as sol-notify); anything else 500s every request, including `/health`. It is the only switch for whether Mailchimp writes are real.
 
-GitHub secrets required: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `RELEASE_TOKEN`, and per environment (`_STAGING` / `_PRODUCTION`): `API_KEY`, `SOL_API_URL`, `SOL_API_KEY`, `SOL_NOTIFY_URL`, `SOL_NOTIFY_API_KEY`. `SOL_NOTIFY_API_KEY_*` is the value of sol-notify's own inbound `API_KEY` for that environment.
+| ENVIRONMENT | Mailchimp write | `SOL_API` binding | Public URL |
+|---|---|---|---|
+| `development` (local `npm run dev`) | **mocked** — no request leaves the Worker; returns the real subscriber hash as `memberId` | `sol-api` (auto-connects to sol-api's local `wrangler dev`) | localhost |
+| `preview` | real | — not configured yet (no preview env; see Open) | — |
+| `staging` (worker `sol-integrate-staging`) | real | `sol-api-staging` | **none** (`workers_dev = false`) |
+| `production` (worker `sol-integrate`) | real | `sol-api` | **none** (`workers_dev = false`) |
 
-Local secrets go in `.dev.vars` (gitignored, see `.dev.vars.example`).
+Staging deploys from `.github/workflows/release.yml` on every merge to `main`; production is the same workflow's `deploy-production` job, gated behind the `production` GitHub Environment (required reviewer).
+
+GitHub secrets required: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `RELEASE_TOKEN`, and `API_KEY_STAGING` / `API_KEY_PRODUCTION` (this service's inbound key — Sol Gate sends it) and `SOL_API_KEY_STAGING` / `SOL_API_KEY_PRODUCTION` (sol-api's key). There is no `SOL_API_URL`: sol-api is reached through the `SOL_API` service binding, because a plain `fetch()` between Workers on the same `workers.dev` subdomain fails with Cloudflare `error code: 1042` (see sol-notify's `decision-service-bindings-for-sol-api`).
+
+Local secrets go in `.dev.vars` (gitignored, see `.dev.vars.example`). Bruno (`bruno/`) only has a Dev environment — staging and production can't be reached from outside Cloudflare.
 
 ## Architecture
 
-**Stack**: Hono 4.x → Cloudflare Workers, no database. Integration config (including Mailchimp API keys) and the audit-log trail both live behind `sol-api` (`../sol-api`); notifications are handed off to `sol-notify` (`../sol-notify`). Scaffolded from sol-notify — same layout, middleware, logger, response envelope, and release pipeline.
+**Stack**: Hono 4.x → Cloudflare Workers, no database. Integration config (including Mailchimp API keys) and the audit-log trail both live behind `sol-api` (`../sol-api`). Scaffolded from sol-notify — same layout, middleware, logger, response envelope, and release pipeline.
 
 ### Source layout
 
 ```
 src/
-├── index.ts                          # Hono app entry
+├── index.ts                          # Hono app entry; validates ENVIRONMENT on every request
 ├── routes/
 │   ├── health.ts                       # GET /health (no auth)
-│   └── integration.ts                  # POST / — the single integration-write entrypoint
+│   └── integration.ts                  # POST / — perform one integration write, return its outcome
 ├── validators/integration.ts           # z.discriminatedUnion("type", [mailchimpEnvelopeSchema]) — SOL-10 appends google_sheets
-├── services/mailchimp-integration.ts   # prepareMailchimpWrite() (sync) + deliverMailchimpWrite() (backgrounded)
+├── services/mailchimp-integration.ts   # runMailchimpWrite() → outcome; logWriteOutcome() (backgrounded)
 ├── lib/
-│   ├── sol-api.ts                      # getIntegration(), writeNotificationLog()
-│   ├── mailchimp.ts                    # upsertListMember() — PUT member by subscriber hash, then tags
-│   ├── sol-notify.ts                   # requestNotification() — POST notification.requested
-│   ├── retry.ts                        # withRetry() with shouldRetry — only inside ctx.waitUntil()
+│   ├── sol-api.ts                      # getIntegration(), writeNotificationLog() — via the SOL_API binding, text-first parse
+│   ├── mailchimp.ts                    # upsertListMember() / mockUpsertListMember(), result links, readable failure reasons
+│   ├── environment.ts                  # ENVIRONMENT enum
+│   ├── retry.ts                        # withRetry() with shouldRetry
 │   └── logger.ts                       # structured JSON logger with key/token/secret redaction
-├── middleware/{auth,error}.ts          # X-API-Key check, global error envelope
+├── middleware/{auth,error}.ts          # X-API-Key check (second layer behind the binding), global error envelope
 └── types/index.ts                      # Env bindings, AppEnv
 ```
 
@@ -58,32 +69,51 @@ X-API-Key: <API_KEY>
   "clientId": "acme-corp",
   "type": "mailchimp",
   "integrationId": "<uuid of the integrations row>",
-  "fields": {
+  "fields": {                               // already mapped by Sol Gate into Mailchimp's shape
     "email": "jane@example.com",
-    "mergeFields": { "FNAME": "Jane" },   // optional, audience merge tags as-is
-    "tags": ["website-signup"],           // optional, only ever added
-    "statusIfNew": "subscribed"           // optional, "subscribed" (default) | "pending" (double opt-in)
+    "mergeFields": { "FNAME": "Jane" },     // optional, audience merge tags as-is
+    "tags": ["website-signup"],             // optional, only ever added
+    "statusIfNew": "subscribed"             // optional, "subscribed" (default) | "pending" (double opt-in)
   },
-  "notification": {                       // optional — omit for "no notification needed"
-    "recipients": ["sales@acme.com"],
-    "subject": "New Mailchimp subscriber",
-    "cta": { "url": "https://…", "label": "View audience" }
-  }
+  "context": { "formId": "<uuid>", "submissionId": "…" }   // optional, stored in the audit log for tracing
 }
 ```
 
-Responses: `202` accepted · `401` bad key · `422` envelope/fields invalid · `404` integration not found, wrong type, not `active`, or missing its Mailchimp config · `500` unexpected (e.g. sol-api unreachable).
+Response — **`200` for every outcome**, since a failed write is a valid result, not a broken request:
 
-### Request flow — synchronous vs. backgrounded
+```json
+{ "success": true, "data": { "outcome": "succeeded", "url": "https://us21.admin.mailchimp.com/lists/members/view?id=…", "memberId": "…" } }
+{ "success": true, "data": { "outcome": "failed", "url": "https://us21.admin.mailchimp.com/lists/", "detail": "Member In Compliance State: …" } }
+{ "success": true, "data": { "outcome": "skipped", "detail": "Integration is not active (status: disabled)" } }
+```
 
-**Synchronous**: validate envelope (Mailchimp's field shape is fixed, so fields are validated here too) → `GET /v1/clients/:clientId/integrations/:integrationId` → respond `202`. Unusable integration → `404` plus a backgrounded `skipped` log (the board's "Skip + log").
+`401` bad key · `422` malformed request · `500` only for something unexpected (or an invalid `ENVIRONMENT`).
 
-**Backgrounded** in `c.executionCtx.waitUntil()`: Mailchimp upsert (retried on 429/5xx/network, **not** on other 4xx — those are permanent, e.g. "Member In Compliance State") → `POST /v1/notification-logs` with `type: "mailchimp"`, `workflow: "integration-service"`, `eventName: "mailchimp.upsert_member"`, outcome `succeeded`/`failed` → if `notification` was given and the write succeeded, POST to sol-notify with `emailTemplate: "mailchimp_confirmation"`. A failed sol-notify hand-off is console-logged only; the write's own `succeeded` log stands.
+- **`skipped`** — the integration can't be used: not found (sol-api scopes the lookup to `clientId`, so another client's integration is "not found" too), wrong type, not `active`, or no Mailchimp config. The form is misconfigured, not the submission.
+- **`failed`** — the write was attempted and didn't succeed, or sol-api couldn't be reached to load the config.
+- **`detail`** ends up in a client-facing email: always short and readable, never credentials. The technical error goes to the audit log only.
+- **`url`** — the member's page in Mailchimp's admin UI (from the PUT response's `web_id`), else the account's audiences page. The `web_id` URL shape is still to be verified against a real response.
 
-Mailchimp credentials never enter logs: the logger redacts `*key*`/`*token*` keys and log metadata only carries `integrationId`, `listId`, `email`, `tags`, `memberId`.
+### Request flow
+
+1. Validate the envelope (Mailchimp's field shape is fixed, so fields are validated here too).
+2. `GET /v1/clients/:clientId/integrations/:integrationId` through `SOL_API` → `skipped` / `failed` if unusable.
+3. Upsert the member — `PUT /lists/{listId}/members/{md5(email)}`, then tags. Idempotent, so Sol Gate can safely retry the whole call. Up to **2 attempts**, **5 s timeout** per Mailchimp request; permanent 4xx (other than 429) aren't retried.
+4. Respond with the outcome.
+5. In `waitUntil()`: `POST /v1/notification-logs` with `type: "mailchimp"`, `workflow: "integration-service"`, `eventName: "mailchimp.upsert_member"`, the outcome, and `{ integrationId, email, tags, memberId?, formId?, submissionId? }` metadata. Best-effort — logged to console on failure, never re-thrown.
+
+**Time budget:** Sol Gate makes this call inside its own `waitUntil`, which Cloudflare allows ~30 s after its response, and its notifications share that budget. Worst case here is ≈20 s (2 attempts × member PUT + tags POST × 5 s). Whether Sol Gate orchestrates through `waitUntil` or Cloudflare Queues / Workflows is decided in SOL-38.
+
+Mailchimp credentials never leave the service: the logger redacts `*key*`/`*token*` keys, log metadata carries only IDs, email and tags, and `detail` comes from Mailchimp's own problem title/detail.
+
+## Open
+
+- **Preview / e2e (decided, not built yet):** PR previews get a public `workers.dev` URL (API-key protected, ephemeral, `SOL_API` → `sol-api-dev`, which only holds sandbox integrations); staging and production stay internal. A SOL-17-style e2e suite runs against the preview and checks results through Mailchimp's API, using a dedicated **sandbox Mailchimp account** (Free plan: 250 contacts, 1 audience). Tests use real-domain plus-addresses (Mailchimp rejects `example.com`) and **archive** members in cleanup — never permanently delete, or the address can't be re-added. Staging is verified end-to-end through Sol Gate staging (SOL-38) once it exists; until then production merges without a staging e2e, accepted since no real users are on this service yet.
+- **`web_id` link:** confirm against a real Mailchimp response (first preview e2e run).
 
 ## Related
 
+- Sol Gate (SOL-38) — the only caller.
 - `sol-api` — `GET /v1/clients/:clientId/integrations/:integrationId` (SOL-7), `POST /v1/notification-logs`.
-- `sol-notify` — `mailchimp_confirmation` template (SOL-8).
-- SOL-10 — Google Sheets branch (config fetched *before* field validation, since required fields come from `column_mapping`).
+- sol-notify `form_submission` template (SOL-34) — renders this service's `outcome` / `url` / `detail`.
+- SOL-10 — Google Sheets branch. A Sheets row append is **not** idempotent (a retry duplicates the row), so it needs an idempotency key; it should also accept fields already mapped by Sol Gate.

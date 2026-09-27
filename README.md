@@ -1,12 +1,12 @@
 # sol-integrate
 
-Cloudflare Worker that writes form submissions into a client's third-party integrations, then optionally requests a confirmation email from [sol-notify](https://github.com/solsoftware-co/sol-notify). First pass: **Mailchimp** (add/update audience member). Google Sheets follows in SOL-10.
+Internal Cloudflare Worker that performs one integration write — first pass: **Mailchimp** (add/update an audience member) — and returns its outcome. Its only caller is **Sol Gate**, the public form front door (SOL-38), over a service binding; staging and production have no public URL. Google Sheets follows in SOL-10.
 
 ```bash
 cp .dev.vars.example .dev.vars
 npm install
-npm run dev   # http://localhost:8789
+npm run dev   # http://localhost:8789 — Mailchimp writes are mocked locally
 npm test
 ```
 
-See [CLAUDE.md](./CLAUDE.md) for the request contract, flow, and environments. Bruno collection in `bruno/`.
+See [CLAUDE.md](./CLAUDE.md) for the request contract, flow, and environments.

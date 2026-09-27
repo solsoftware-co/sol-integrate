@@ -2,8 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   subscriberHash,
   upsertListMember,
+  mockUpsertListMember,
   MailchimpApiError,
   isRetryableMailchimpError,
+  describeMailchimpError,
+  memberUrl,
+  audienceUrl,
 } from "../../../src/lib/mailchimp.js";
 
 const CONFIG = { apiKey: "abc123-us21", listId: "list42", serverPrefix: "us21" };
@@ -31,14 +35,14 @@ describe("subscriberHash", () => {
 
 describe("upsertListMember", () => {
   it("PUTs the member on the right datacenter with basic auth", async () => {
-    fetchMock.mockResolvedValueOnce(json({ id: "member-1" }));
+    fetchMock.mockResolvedValueOnce(json({ id: "member-1", web_id: 123456 }));
 
     const result = await upsertListMember(CONFIG, {
       email: "jane@example.com",
       mergeFields: { FNAME: "Jane" },
     });
 
-    expect(result).toEqual({ memberId: "member-1" });
+    expect(result).toEqual({ memberId: "member-1", webId: 123456 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://us21.api.mailchimp.com/3.0/lists/list42/members/9e26471d35a78862c17e467d87cddedf");
@@ -52,13 +56,13 @@ describe("upsertListMember", () => {
   });
 
   it("honours statusIfNew for double opt-in", async () => {
-    fetchMock.mockResolvedValueOnce(json({ id: "member-1" }));
+    fetchMock.mockResolvedValueOnce(json({ id: "member-1", web_id: 123456 }));
     await upsertListMember(CONFIG, { email: "jane@example.com", statusIfNew: "pending" });
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).status_if_new).toBe("pending");
   });
 
   it("adds tags via the tags endpoint when given", async () => {
-    fetchMock.mockResolvedValueOnce(json({ id: "member-1" })).mockResolvedValueOnce(new Response(null, { status: 204 }));
+    fetchMock.mockResolvedValueOnce(json({ id: "member-1", web_id: 123456 })).mockResolvedValueOnce(new Response(null, { status: 204 }));
 
     await upsertListMember(CONFIG, { email: "jane@example.com", tags: ["website", "spring-promo"] });
 
@@ -81,19 +85,50 @@ describe("upsertListMember", () => {
     const err = await upsertListMember(CONFIG, { email: "jane@example.com" }).catch((e) => e);
     expect(err).toBeInstanceOf(MailchimpApiError);
     expect(err.status).toBe(400);
-    expect(err.message).toContain("Member In Compliance State");
+    expect(err.readableReason).toBe("Member In Compliance State: jane@example.com is unsubscribed");
+  });
+});
+
+describe("mockUpsertListMember", () => {
+  it("never calls Mailchimp, and returns the real subscriber hash as memberId", async () => {
+    const result = await mockUpsertListMember(CONFIG, { email: "Jane@Example.com", tags: ["x"] });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ memberId: "9e26471d35a78862c17e467d87cddedf", webId: 0 });
   });
 });
 
 describe("isRetryableMailchimpError", () => {
   it("does not retry permanent 4xx", () => {
-    expect(isRetryableMailchimpError(new MailchimpApiError("bad", 400))).toBe(false);
-    expect(isRetryableMailchimpError(new MailchimpApiError("unauthorized", 401))).toBe(false);
+    expect(isRetryableMailchimpError(new MailchimpApiError(400, "bad"))).toBe(false);
+    expect(isRetryableMailchimpError(new MailchimpApiError(401, "unauthorized"))).toBe(false);
   });
 
   it("retries 429, 5xx and non-Mailchimp errors (network, timeout)", () => {
-    expect(isRetryableMailchimpError(new MailchimpApiError("slow down", 429))).toBe(true);
-    expect(isRetryableMailchimpError(new MailchimpApiError("down", 503))).toBe(true);
+    expect(isRetryableMailchimpError(new MailchimpApiError(429, "slow down"))).toBe(true);
+    expect(isRetryableMailchimpError(new MailchimpApiError(503, "down"))).toBe(true);
     expect(isRetryableMailchimpError(new TypeError("fetch failed"))).toBe(true);
+  });
+});
+
+describe("describeMailchimpError", () => {
+  it("uses Mailchimp's own reason, without the status prefix", () => {
+    expect(describeMailchimpError(new MailchimpApiError(400, "Invalid Resource: bad email"))).toBe(
+      "Invalid Resource: bad email"
+    );
+  });
+
+  it("gives a readable reason for timeouts and network errors", () => {
+    expect(describeMailchimpError(new DOMException("aborted", "AbortError"))).toBe("Mailchimp didn't respond in time");
+    expect(describeMailchimpError(new TypeError("fetch failed"))).toBe("Couldn't reach Mailchimp");
+  });
+});
+
+describe("result links", () => {
+  it("links to the member on the account's datacenter", () => {
+    expect(memberUrl(CONFIG, 123456)).toBe("https://us21.admin.mailchimp.com/lists/members/view?id=123456");
+  });
+
+  it("falls back to the audiences page", () => {
+    expect(audienceUrl(CONFIG)).toBe("https://us21.admin.mailchimp.com/lists/");
   });
 });

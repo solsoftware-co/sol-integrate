@@ -1,7 +1,9 @@
-// Only ever called from inside ctx.waitUntil() (the backgrounded half of a
-// request), never the synchronous request path — retry backoff would block
-// a caller (including client sites calling this service directly over HTTP
-// on form submit) for no reason otherwise.
+// Used both in the request path (the Mailchimp write — its outcome is the
+// response) and inside ctx.waitUntil() (the audit-log write). Blocking in
+// the request path is fine here: the only caller is Sol Gate, which runs
+// this call inside its own backgrounded work after answering the browser —
+// but keep attempts and timeouts tight, since that work shares Sol Gate's
+// ~30s waitUntil budget.
 
 export interface RetryOptions {
   attempts?: number;
