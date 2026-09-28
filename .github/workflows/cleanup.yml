@@ -1,0 +1,44 @@
+name: Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  # Idempotent — 404 (already gone, or never deployed, e.g. a fork PR) counts
+  # as success, same as sol-api's cleanup.yml. No Neon branch to delete here.
+  delete-preview:
+    name: Delete preview worker
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete preview worker
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/workers/services/sol-integrate-pr-${{ github.event.pull_request.number }}" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
+          if [ "$STATUS" != "200" ] && [ "$STATUS" != "404" ]; then
+            echo "Unexpected status $STATUS from Cloudflare delete"
+            exit 1
+          fi
+          echo "Worker deleted (status: $STATUS)"
+
+  # Archives the sandbox Mailchimp contacts the e2e suite created for this PR
+  # (e2e+pr<N>-…) — the suite leaves them in place while the PR is open so
+  # they can be inspected. A separate job so a Mailchimp problem never blocks
+  # deleting the Worker, or vice versa. Idempotent: nothing to archive is a
+  # success.
+  archive-e2e-contacts:
+    name: Archive e2e Mailchimp contacts
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Archive this PR's e2e contacts
+        run: node scripts/archive-e2e-contacts.mjs ${{ github.event.pull_request.number }}
+        env:
+          MAILCHIMP_SANDBOX_API_KEY: ${{ secrets.MAILCHIMP_SANDBOX_API_KEY }}
+          MAILCHIMP_SANDBOX_AUDIENCE_ID: ${{ secrets.MAILCHIMP_SANDBOX_AUDIENCE_ID }}

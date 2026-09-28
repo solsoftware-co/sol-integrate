@@ -23,6 +23,27 @@ service = "sol-api"
 [observability]
 enabled = true
 
+# Ephemeral per-PR previews (SOL-20). .github/workflows/pr.yml rewrites this
+# name to sol-integrate-pr-<N> in its own checkout before deploying — keep
+# the line exactly `name = "sol-integrate-preview"` so that substitution
+# matches. Unlike staging/production, previews keep a public workers.dev URL
+# (API-key protected) so the e2e suite can reach them; they're safe to expose
+# because SOL_API points at sol-api-dev, which only holds sandbox integrations.
+[env.preview]
+name = "sol-integrate-preview"
+workers_dev = true
+
+[env.preview.vars]
+ENVIRONMENT = "preview"
+# API_KEY, SOL_API_KEY are Cloudflare Secrets — not set here
+
+[[env.preview.services]]
+binding = "SOL_API"
+service = "sol-api-dev"
+
+[env.preview.observability]
+enabled = true
+
 # Staging and production are internal-only: no workers.dev URL, reachable
 # only through a service binding from Sol Gate (SOL-38). X-API-Key is still
 # checked as a second layer.
