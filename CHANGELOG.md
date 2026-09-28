@@ -1,3 +1,11 @@
+# [1.1.0](https://github.com/solsoftware-co/sol-integrate/compare/v1.0.0...v1.1.0) (2026-09-28)
+
+
+### Features
+
+* add per-PR preview envs with a Mailchimp sandbox e2e suite (SOL-20) ([59884ea](https://github.com/solsoftware-co/sol-integrate/commit/59884eaa9f0fbd24c65b44306222be3d731f676d))
+* archive a PR's e2e Mailchimp contacts on close, not after each run ([912844c](https://github.com/solsoftware-co/sol-integrate/commit/912844c9b148f63333facdb1e2c6d726cf4cac66))
+
 # 1.0.0 (2026-09-27)
 
 
