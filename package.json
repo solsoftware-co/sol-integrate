@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:watch": "vitest",
     "deploy": "wrangler deploy",
     "type-check": "tsc --noEmit",

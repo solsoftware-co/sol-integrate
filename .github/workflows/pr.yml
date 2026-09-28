@@ -4,6 +4,16 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# One preview deploy per PR at a time — a new push supersedes an in-flight
+# run rather than racing it to deploy the same sol-integrate-pr-<N> Worker.
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   unit-test:
     name: Unit tests
@@ -16,4 +26,144 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run type-check
-      - run: npm test
+      - run: npm run test:unit
+
+  # Ephemeral per-PR preview Worker (SOL-20), ported from sol-notify's SOL-17.
+  # Deployed as wrangler.toml's [env.preview] (ENVIRONMENT=preview: real
+  # Mailchimp writes, public workers.dev URL) under a per-PR name. Its SOL_API
+  # service binding targets sol-api's persistent `dev` Worker (SOL-31), which
+  # only holds sandbox integrations — never a client's audience. The suite
+  # expects the sandbox integrations to already exist there (a one-time
+  # setup, scripts/seed-dev-e2e.sql); seeding isn't this workflow's job.
+  #
+  # Skipped for PRs from forks: this repo is public, and GitHub withholds
+  # secrets from fork PRs, so the deploy could never succeed there anyway.
+  preview:
+    name: Preview deploy + E2E
+    needs: unit-test
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      WORKER_NAME: sol-integrate-pr-${{ github.event.pull_request.number }}
+      APP_VERSION: pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # wrangler 3 rejects --name together with --env, so the per-PR Worker
+      # name is written into [env.preview] in this runner's checkout only.
+      # Deploying without --env instead would silently use the top-level
+      # SOL_API binding — production sol-api.
+      - name: Name the preview worker for this PR
+        run: |
+          sed -i 's/^name = "sol-integrate-preview"$/name = "'"$WORKER_NAME"'"/' wrangler.toml
+          grep -q "^name = \"$WORKER_NAME\"$" wrangler.toml || { echo "::error::failed to set [env.preview] name"; exit 1; }
+      # Code and secrets must go live together, or requests race a
+      # half-configured Worker: every secret change is its own new Worker
+      # version, rolled out over a few seconds, and /health (which needs no
+      # secrets) can't tell them apart. wrangler 3 can't deploy code and
+      # secrets atomically, so instead:
+      #   1. deploy — only there to guarantee the Worker exists (first run
+      #      of a PR), since secrets can't be set on a Worker that doesn't;
+      #   2. upload every secret as ONE new version (secret bulk);
+      #   3. deploy again, tagged with an APP_VERSION unique to this run —
+      #      secrets persist across deploys, so this version has all of them;
+      #   4. wait until /health reports exactly that APP_VERSION.
+      - name: Deploy preview worker (ensure it exists)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --env preview
+      - name: Set preview worker secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          API_KEY: ${{ secrets.API_KEY_STAGING }}
+          SOL_API_KEY: ${{ secrets.SOL_API_KEY_DEV }}
+        run: |
+          secrets_file="$RUNNER_TEMP/preview-secrets.json"
+          node -e '
+            const keys = ["API_KEY", "SOL_API_KEY"];
+            process.stdout.write(JSON.stringify(Object.fromEntries(keys.map((k) => [k, process.env[k]]))));
+          ' > "$secrets_file"
+          npx wrangler secret bulk "$secrets_file" --name $WORKER_NAME
+          rm -f "$secrets_file"
+      - name: Deploy preview worker (final version)
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --env preview --var APP_VERSION:${{ env.APP_VERSION }}
+      - name: Set PREVIEW_URL
+        run: echo "PREVIEW_URL=${{ steps.deploy.outputs.deployment-url }}" >> $GITHUB_ENV
+      - name: Wait for the final version to be serving
+        run: |
+          if [ -z "$PREVIEW_URL" ]; then
+            echo "::error::wrangler-action did not report a deployment URL"
+            exit 1
+          fi
+          # 3 consecutive hits on this run's APP_VERSION, not just any 200 —
+          # an older, not-yet-fully-configured version also answers /health.
+          streak=0
+          for i in $(seq 1 45); do
+            version=$(curl -s "$PREVIEW_URL/health" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).data.version)}catch{}})')
+            if [ "$version" = "$APP_VERSION" ]; then
+              streak=$((streak + 1))
+              if [ "$streak" -ge 3 ]; then
+                echo "Version $APP_VERSION serving after $((i * 2))s"
+                exit 0
+              fi
+            else
+              streak=0
+            fi
+            sleep 2
+          done
+          echo "::error::Version $APP_VERSION not consistently serving within 90s (last seen: ${version:-none})"
+          exit 1
+      - name: Run E2E smoke tests
+        run: npm run test:e2e
+        env:
+          PREVIEW_URL: ${{ env.PREVIEW_URL }}
+          API_KEY_STAGING: ${{ secrets.API_KEY_STAGING }}
+          MAILCHIMP_SANDBOX_API_KEY: ${{ secrets.MAILCHIMP_SANDBOX_API_KEY }}
+          MAILCHIMP_SANDBOX_AUDIENCE_ID: ${{ secrets.MAILCHIMP_SANDBOX_AUDIENCE_ID }}
+      - name: Post preview URL comment
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ env.PREVIEW_URL }}
+        with:
+          script: |
+            const url = process.env.PREVIEW_URL;
+            const success = '${{ job.status }}' !== 'failure';
+            const icon = success ? '🚀' : '❌';
+            const body = success
+              ? `<!-- preview-url -->\n## Preview Deployment ${icon}\n**URL**: ${url}\n\nE2E smoke tests passed — real writes to the sandbox Mailchimp audience were made and checked (succeeded, idempotent update, skipped, failed).`
+              : `<!-- preview-url -->\n## Preview Deployment ${icon}\nDeployment or E2E tests failed. Check the [Actions log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes('<!-- preview-url -->'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

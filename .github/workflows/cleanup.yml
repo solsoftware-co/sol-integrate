@@ -1,0 +1,24 @@
+name: Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  # Idempotent — 404 (already gone, or never deployed, e.g. a fork PR) counts
+  # as success, same as sol-api's cleanup.yml. No Neon branch to delete here.
+  delete-preview:
+    name: Delete preview worker
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete preview worker
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/workers/services/sol-integrate-pr-${{ github.event.pull_request.number }}" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
+          if [ "$STATUS" != "200" ] && [ "$STATUS" != "404" ]; then
+            echo "Unexpected status $STATUS from Cloudflare delete"
+            exit 1
+          fi
+          echo "Worker deleted (status: $STATUS)"

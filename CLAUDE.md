@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-Mailchimp first pass (SOL-9), realigned to the Sol Gate design (SOL-33). Tickets: https://linear.app/sol-software/issue/SOL-9, https://linear.app/sol-software/issue/SOL-33. Design: `sol-brain/sol-gate/` (Obsidian vault) — especially `decisions/decision-dumb-internal-services.md` and `02-architecture.md`. Google Sheets is SOL-10 and not implemented here yet.
+Mailchimp first pass (SOL-9), realigned to the Sol Gate design (SOL-33), with per-PR preview envs + a Mailchimp sandbox e2e suite (SOL-20). Tickets: https://linear.app/sol-software/issue/SOL-9, https://linear.app/sol-software/issue/SOL-33, https://linear.app/sol-software/issue/SOL-20. Design: `sol-brain/sol-gate/` (Obsidian vault) — especially `decisions/decision-dumb-internal-services.md` and `02-architecture.md`. Google Sheets is SOL-10 and not implemented here yet.
 
 ## Role
 
@@ -14,7 +14,8 @@ Mailchimp first pass (SOL-9), realigned to the Sol Gate design (SOL-33). Tickets
 
 ```bash
 npm run dev        # wrangler dev server on http://localhost:8789
-npm test           # vitest via @cloudflare/vitest-pool-workers
+npm test           # unit tests, vitest via @cloudflare/vitest-pool-workers (tests/e2e excluded)
+npm run test:e2e   # e2e suite in plain Node against PREVIEW_URL (skips if unset)
 npm run type-check # tsc --noEmit
 npm run deploy     # deploy to Cloudflare Workers
 ```
@@ -26,15 +27,19 @@ npm run deploy     # deploy to Cloudflare Workers
 | ENVIRONMENT | Mailchimp write | `SOL_API` binding | Public URL |
 |---|---|---|---|
 | `development` (local `npm run dev`) | **mocked** — no request leaves the Worker; returns the real subscriber hash as `memberId` | `sol-api` (auto-connects to sol-api's local `wrangler dev`) | localhost |
-| `preview` | real | — not configured yet (no preview env; see Open) | — |
+| `preview` (worker `sol-integrate-pr-<N>`, SOL-20) | real — against the **sandbox** Mailchimp account only | `sol-api-dev` | **yes**, API-key protected |
 | `staging` (worker `sol-integrate-staging`) | real | `sol-api-staging` | **none** (`workers_dev = false`) |
 | `production` (worker `sol-integrate`) | real | `sol-api` | **none** (`workers_dev = false`) |
+
+**Previews** are deployed by `.github/workflows/pr.yml` on every same-repo PR (fork PRs skipped — no secrets) and deleted by `cleanup.yml` on close. The suite expects two sandbox integrations to already exist in `sol-api-dev` — a **one-time setup**, not CI's job: paste `scripts/seed-dev-e2e.sql` into the Neon console's SQL editor (sol-api project, `dev` branch), fill in the sandbox key and audience ID, run it. Re-run it after sol-api's `db:branch:reset`, which wipes them (the suite fails with a pointer back to the script if they're missing). `tests/e2e/smoke.test.ts` then makes real writes to the sandbox audience and checks them through Mailchimp's API (succeeded + merge fields/tags, idempotent update, skipped, failed), archiving the test contact afterwards. Previews are safe to expose because sol-api-dev only holds sandbox integrations.
 
 Staging deploys from `.github/workflows/release.yml` on every merge to `main`; production is the same workflow's `deploy-production` job, gated behind the `production` GitHub Environment (required reviewer).
 
 GitHub secrets required: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `RELEASE_TOKEN`, and `API_KEY_STAGING` / `API_KEY_PRODUCTION` (this service's inbound key — Sol Gate sends it) and `SOL_API_KEY_STAGING` / `SOL_API_KEY_PRODUCTION` (sol-api's key). There is no `SOL_API_URL`: sol-api is reached through the `SOL_API` service binding, because a plain `fetch()` between Workers on the same `workers.dev` subdomain fails with Cloudflare `error code: 1042` (see sol-notify's `decision-service-bindings-for-sol-api`).
 
-Local secrets go in `.dev.vars` (gitignored, see `.dev.vars.example`). Bruno (`bruno/`) only has a Dev environment — staging and production can't be reached from outside Cloudflare.
+PR previews add: `SOL_API_KEY_DEV` (sol-api-dev's key), and `MAILCHIMP_SANDBOX_API_KEY` / `MAILCHIMP_SANDBOX_AUDIENCE_ID` (the dedicated sandbox Mailchimp account — Free plan, 250 contacts, double opt-in and automations off; never a client's account), which only the e2e suite uses, to check members and archive them afterwards. `API_KEY_STAGING` is reused as the preview Worker's inbound key, as in sol-notify.
+
+Local secrets go in `.dev.vars` (gitignored, see `.dev.vars.example`). Bruno (`bruno/`) has Dev and PR Preview environments — staging and production can't be reached from outside Cloudflare.
 
 ## Architecture
 
@@ -58,6 +63,10 @@ src/
 │   └── logger.ts                       # structured JSON logger with key/token/secret redaction
 ├── middleware/{auth,error}.ts          # X-API-Key check (second layer behind the binding), global error envelope
 └── types/index.ts                      # Env bindings, AppEnv
+tests/
+├── unit/                               # Workers pool (vitest.config.ts)
+└── e2e/                                # plain Node vs. a deployed preview (vitest.e2e.config.ts); fixtures.ts, helpers/mailchimp.ts
+scripts/seed-dev-e2e.sql                # one-time setup: sandbox integrations in sol-api-dev (run by hand in the Neon console)
 ```
 
 ### Request contract
@@ -108,8 +117,15 @@ Mailchimp credentials never leave the service: the logger redacts `*key*`/`*toke
 
 ## Open
 
-- **Preview / e2e (decided, not built yet):** PR previews get a public `workers.dev` URL (API-key protected, ephemeral, `SOL_API` → `sol-api-dev`, which only holds sandbox integrations); staging and production stay internal. A SOL-17-style e2e suite runs against the preview and checks results through Mailchimp's API, using a dedicated **sandbox Mailchimp account** (Free plan: 250 contacts, 1 audience). Tests use real-domain plus-addresses (Mailchimp rejects `example.com`) and **archive** members in cleanup — never permanently delete, or the address can't be re-added. Staging is verified end-to-end through Sol Gate staging (SOL-38) once it exists; until then production merges without a staging e2e, accepted since no real users are on this service yet.
-- **`web_id` link:** confirm against a real Mailchimp response (first preview e2e run).
+- **Staging e2e:** staging is verified end-to-end through Sol Gate staging (SOL-38) once it exists; until then only PR previews exercise real Mailchimp — accepted, since no real users are on this service yet.
+- **`web_id` link:** the e2e suite checks the URL uses the member's real `web_id`; one manual click (the suite logs the link) confirms it opens the right member.
+
+### E2E gotchas
+
+- Mailchimp rejects obviously fake domains (`example.com`), so test contacts are real-domain plus-addresses (`e2e+<runId>@solsoftware.co`, override with `E2E_EMAIL_DOMAIN`). Nothing is sent to them.
+- Cleanup **archives** (`DELETE /members/{hash}`), never permanently deletes — a permanently deleted address can never be re-added through the API. Archived contacts don't count toward the 250-contact limit.
+- The fixed integration IDs in `tests/e2e/fixtures.ts` must match `scripts/seed-dev-e2e.sql`.
+- Inherited from sol-notify (SOL-17): wrangler 3 rejects `--name` with `--env`, so `pr.yml` rewrites `[env.preview]`'s `name = "sol-integrate-preview"` line — keep it exact. Deploying without `--env` would silently bind **production** sol-api. Secrets go in as one `secret bulk` version, and the e2e waits for `/health` to report that run's exact `APP_VERSION`.
 
 ## Related
 
