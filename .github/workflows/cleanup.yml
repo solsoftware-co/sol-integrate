@@ -22,3 +22,23 @@ jobs:
             exit 1
           fi
           echo "Worker deleted (status: $STATUS)"
+
+  # Archives the sandbox Mailchimp contacts the e2e suite created for this PR
+  # (e2e+pr<N>-…) — the suite leaves them in place while the PR is open so
+  # they can be inspected. A separate job so a Mailchimp problem never blocks
+  # deleting the Worker, or vice versa. Idempotent: nothing to archive is a
+  # success.
+  archive-e2e-contacts:
+    name: Archive e2e Mailchimp contacts
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Archive this PR's e2e contacts
+        run: node scripts/archive-e2e-contacts.mjs ${{ github.event.pull_request.number }}
+        env:
+          MAILCHIMP_SANDBOX_API_KEY: ${{ secrets.MAILCHIMP_SANDBOX_API_KEY }}
+          MAILCHIMP_SANDBOX_AUDIENCE_ID: ${{ secrets.MAILCHIMP_SANDBOX_AUDIENCE_ID }}

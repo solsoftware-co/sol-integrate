@@ -5,6 +5,7 @@ import {
   WORKING_INTEGRATION_ID,
   BROKEN_KEY_INTEGRATION_ID,
   MISSING_INTEGRATION_ID,
+  e2eEmailPrefix,
 } from "./fixtures.js";
 
 const PREVIEW_URL = process.env.PREVIEW_URL;
@@ -43,15 +44,22 @@ async function write(integrationId: string, fields: Record<string, unknown>) {
   return body.data;
 }
 
-// Unique per run, so concurrent PR runs sharing one sandbox audience never
-// touch each other's contact.
+// Set by pr.yml. In a PR run, the contact is left in place so it can be
+// inspected in Mailchimp while the PR is open; cleanup.yml archives every
+// contact for the PR when it closes. Local runs have no cleanup pipeline
+// behind them, so they archive their own contact.
+const PR_NUMBER = process.env.E2E_PR_NUMBER || undefined;
+
+// Unique per run, so runs sharing one sandbox audience never touch each
+// other's contact, and a PR reopened after cleanup never hits its own
+// archived contact.
 const runId = crypto.randomUUID().slice(0, 8);
-const email = `e2e+${runId}@${EMAIL_DOMAIN}`;
+const email = `${e2eEmailPrefix(PR_NUMBER)}${runId}@${EMAIL_DOMAIN}`;
 let created = false;
 
 describe.skipIf(skip)("E2E smoke tests", () => {
   afterAll(async () => {
-    if (created) await archiveMember(email);
+    if (created && !PR_NUMBER) await archiveMember(email);
   });
 
   it("GET /health returns 200 in the preview environment", async () => {

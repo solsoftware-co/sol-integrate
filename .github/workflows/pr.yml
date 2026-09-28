@@ -133,6 +133,9 @@ jobs:
           API_KEY_STAGING: ${{ secrets.API_KEY_STAGING }}
           MAILCHIMP_SANDBOX_API_KEY: ${{ secrets.MAILCHIMP_SANDBOX_API_KEY }}
           MAILCHIMP_SANDBOX_AUDIENCE_ID: ${{ secrets.MAILCHIMP_SANDBOX_AUDIENCE_ID }}
+          # Test contacts are left in place and archived by cleanup.yml when
+          # this PR closes — see scripts/archive-e2e-contacts.mjs.
+          E2E_PR_NUMBER: ${{ github.event.pull_request.number }}
       - name: Post preview URL comment
         if: always()
         uses: actions/github-script@v7
@@ -144,7 +147,7 @@ jobs:
             const success = '${{ job.status }}' !== 'failure';
             const icon = success ? '🚀' : '❌';
             const body = success
-              ? `<!-- preview-url -->\n## Preview Deployment ${icon}\n**URL**: ${url}\n\nE2E smoke tests passed — real writes to the sandbox Mailchimp audience were made and checked (succeeded, idempotent update, skipped, failed).`
+              ? `<!-- preview-url -->\n## Preview Deployment ${icon}\n**URL**: ${url}\n\nE2E smoke tests passed — real writes to the sandbox Mailchimp audience were made and checked (succeeded, idempotent update, skipped, failed). The test contacts (\`e2e+pr${context.issue.number}-…\`) stay in the sandbox audience until this PR closes, then \`cleanup.yml\` archives them.`
               : `<!-- preview-url -->\n## Preview Deployment ${icon}\nDeployment or E2E tests failed. Check the [Actions log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.`;
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
