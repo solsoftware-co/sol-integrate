@@ -77,6 +77,24 @@ describe("POST /", () => {
     expect(await res.json()).toEqual({ success: true, data: result });
   });
 
+  it.each([
+    ["failed", "warn", { outcome: "failed", detail: "Invalid Resource" }],
+    ["succeeded", "info", { outcome: "succeeded", memberId: "member-1" }],
+    ["skipped", "info", { outcome: "skipped", detail: "Integration not found" }],
+  ])("logs a %s write at %s", async (_outcome, level, result) => {
+    runMock.mockResolvedValue({ result });
+    const logSpy = vi.spyOn(console, "log");
+    const errorSpy = vi.spyOn(console, "error");
+
+    await post(body);
+
+    const lines = [...logSpy.mock.calls, ...errorSpy.mock.calls].map(([line]) => JSON.parse(line));
+    const finished = lines.find((e) => e.message === "integration write finished");
+    expect(finished).toMatchObject({ level, outcome: result.outcome });
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
   it("never returns the internal error message to the caller", async () => {
     runMock.mockResolvedValue({
       result: { outcome: "failed", detail: "Couldn't load the integration's settings" },

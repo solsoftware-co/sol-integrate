@@ -87,6 +87,25 @@ describe("upsertListMember", () => {
     expect(err.status).toBe(400);
     expect(err.readableReason).toBe("Member In Compliance State: jane@example.com is unsubscribed");
   });
+
+  it("names the server prefix when its host doesn't resolve (Cloudflare 530), and doesn't retry it", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("error code: 1016", { status: 530 }));
+
+    const err = await upsertListMember({ ...CONFIG, serverPrefix: "us-14" }, { email: "jane@example.com" }).catch(
+      (e) => e
+    );
+    expect(err).toBeInstanceOf(MailchimpApiError);
+    expect(err.status).toBe(530);
+    expect(err.readableReason).toMatch(/server prefix "us-14" doesn't exist/);
+    expect(isRetryableMailchimpError(err)).toBe(false);
+  });
+
+  it("falls back to the HTTP status when there's no problem body or status text", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("<html>oops</html>", { status: 502, statusText: "" }));
+
+    const err = await upsertListMember(CONFIG, { email: "jane@example.com" }).catch((e) => e);
+    expect(err.message).toBe("Mailchimp 502: Unexpected response from Mailchimp (HTTP 502)");
+  });
 });
 
 describe("mockUpsertListMember", () => {
