@@ -5,6 +5,11 @@ import type { MailchimpConfig } from "./sol-api.js";
 // 2 attempts × (member PUT + tags POST) × 5s + backoff ≈ 20s.
 const FETCH_TIMEOUT_MS = 5_000;
 
+// Cloudflare answers a Worker's fetch with 530 (and no Mailchimp body) when
+// the hostname doesn't resolve — for us, a server prefix that isn't a real
+// Mailchimp datacenter (e.g. "us-14" instead of "us14").
+const UNRESOLVABLE_HOST_STATUS = 530;
+
 export class MailchimpApiError extends Error {
   constructor(
     public readonly status: number,
@@ -17,8 +22,10 @@ export class MailchimpApiError extends Error {
 
   // 4xx other than 429 is a problem with the request itself (invalid email,
   // member in compliance state, bad list ID, revoked key) — retrying won't
-  // change the answer. 429/5xx/network errors are worth retrying.
+  // change the answer. So is a 530 (see UNRESOLVABLE_HOST_STATUS). Other
+  // 429/5xx/network errors are worth retrying.
   get permanent(): boolean {
+    if (this.status === UNRESOLVABLE_HOST_STATUS) return true;
     return this.status >= 400 && this.status < 500 && this.status !== 429;
   }
 }
@@ -86,10 +93,20 @@ async function mailchimpFetch(config: MailchimpConfig, path: string, init: Reque
     clearTimeout(timeout);
   }
 
+  if (response.status === UNRESOLVABLE_HOST_STATUS) {
+    throw new MailchimpApiError(
+      response.status,
+      `Mailchimp server prefix "${config.serverPrefix}" doesn't exist — check the integration's server prefix (the part after the dash in the API key, e.g. "us14")`
+    );
+  }
+
   if (!response.ok) {
     // Mailchimp error bodies are RFC 7807 problem details: { title, detail, status }.
     const problem = (await response.json().catch(() => null)) as { title?: string; detail?: string } | null;
-    const reason = [problem?.title, problem?.detail].filter(Boolean).join(": ") || response.statusText;
+    const reason =
+      [problem?.title, problem?.detail].filter(Boolean).join(": ") ||
+      response.statusText ||
+      `Unexpected response from Mailchimp (HTTP ${response.status})`;
     throw new MailchimpApiError(response.status, reason);
   }
 
