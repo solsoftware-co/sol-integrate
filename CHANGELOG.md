@@ -1,3 +1,10 @@
+## [1.1.1](https://github.com/solsoftware-co/sol-integrate/compare/v1.1.0...v1.1.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* explain unresolvable Mailchimp hosts and warn on failed writes ([f73c156](https://github.com/solsoftware-co/sol-integrate/commit/f73c156fdaaec94b2e95290162be450890a3571a))
+
 # [1.1.0](https://github.com/solsoftware-co/sol-integrate/compare/v1.0.0...v1.1.0) (2026-09-28)
 
 
