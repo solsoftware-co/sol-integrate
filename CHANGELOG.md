@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/solsoftware-co/sol-integrate/compare/v1.1.1...v1.2.0) (2026-10-03)
+
+
+### Features
+
+* log and forward trace and submission ids (SOL-46) ([7c18d79](https://github.com/solsoftware-co/sol-integrate/commit/7c18d791e760b210987e4d64bc6e365d9d06aae9))
+
 ## [1.1.1](https://github.com/solsoftware-co/sol-integrate/compare/v1.1.0...v1.1.1) (2026-10-02)
 
 
