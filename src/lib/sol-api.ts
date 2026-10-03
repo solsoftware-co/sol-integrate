@@ -3,6 +3,8 @@
 // live behind sol-api, reached through the SOL_API service binding (see
 // wrangler.toml) with X-API-Key auth.
 
+import { traceHeaders } from "./log-context.js";
+
 const FETCH_TIMEOUT_MS = 10_000;
 
 type ApiEnvelope<T> =
@@ -36,6 +38,8 @@ async function solApiFetch<T>(
       headers: {
         "X-API-Key": apiKey,
         "Content-Type": "application/json",
+        // So sol-api logs under the same trace and submission (SOL-46).
+        ...traceHeaders(),
         ...init?.headers,
       },
       signal: controller.signal,

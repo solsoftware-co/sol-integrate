@@ -13,7 +13,6 @@ export function errorHandler(err: Error, c: Context<AppEnv>): Response {
   }
 
   logger.error("unhandled error", {
-    requestId: c.get("requestId"),
     path: c.req.path,
     method: c.req.method,
     errorName: err.name,

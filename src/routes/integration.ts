@@ -36,7 +36,6 @@ integration.post("/", async (c) => {
   // up as a problem: warn, so a level filter in observability catches it.
   const log = run.result.outcome === "failed" ? logger.warn : logger.info;
   log("integration write finished", {
-    requestId: c.get("requestId"),
     clientId: envelope.clientId,
     integrationId: envelope.integrationId,
     type: envelope.type,
