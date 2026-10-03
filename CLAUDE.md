@@ -60,6 +60,7 @@ src/
 │   ├── mailchimp.ts                    # upsertListMember() / mockUpsertListMember(), result links, readable failure reasons
 │   ├── environment.ts                  # ENVIRONMENT enum
 │   ├── retry.ts                        # withRetry() with shouldRetry
+│   ├── log-context.ts                  # environment, traceId, submissionId on every log line (SOL-46)
 │   └── logger.ts                       # structured JSON logger with key/token/secret redaction
 ├── middleware/{auth,error}.ts          # X-API-Key check (second layer behind the binding), global error envelope
 └── types/index.ts                      # Env bindings, AppEnv
@@ -113,6 +114,8 @@ Response — **`200` for every outcome**, since a failed write is a valid result
 5. In `waitUntil()`: `POST /v1/notification-logs` with `type: "mailchimp"`, `workflow: "integration-service"`, `eventName: "mailchimp.upsert_member"`, the outcome, and `{ integrationId, email, tags, memberId?, formId?, submissionId? }` metadata. Best-effort — logged to console on failure, never re-thrown.
 
 **Time budget:** Sol Gate makes this call inside its own `waitUntil`, which Cloudflare allows ~30 s after its response, and its notifications share that budget. Worst case here is ≈20 s (2 attempts × member PUT + tags POST × 5 s). Whether Sol Gate orchestrates through `waitUntil` or Cloudflare Queues / Workflows is decided in SOL-38.
+
+**Tracing (SOL-46):** Every log line carries `environment`, a `traceId` and, for a submission, a `submissionId`. The `traceId` is the caller's `X-Trace-Id` (Sol Gate's, forwarded) or a new one; the `submissionId` is only ever the caller's `X-Submission-Id`, never made up. `lib/log-context.ts` holds them for the request (AsyncLocalStorage, so `waitUntil` work keeps them) and `lib/sol-api.ts` forwards both to sol-api. There is no `requestId`: Cloudflare's own `$metadata.requestId` tells invocations (e.g. a retried call's attempts) apart. `traceId` is one run of work (on every line); `submissionId` is the form submission it's for (only when there is one). A replayed submission would keep its `submissionId` under a new `traceId`. Filter Workers Logs by `submissionId = <id>` for everything that happened to a submission, `traceId = <id>` for one run, or `environment = production`.
 
 Mailchimp credentials never leave the service: the logger redacts `*key*`/`*token*` keys, log metadata carries only IDs, email and tags, and `detail` comes from Mailchimp's own problem title/detail.
 

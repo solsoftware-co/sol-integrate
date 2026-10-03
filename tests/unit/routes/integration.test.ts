@@ -95,6 +95,29 @@ describe("POST /", () => {
     errorSpy.mockRestore();
   });
 
+  describe("trace and submission ids (SOL-46)", () => {
+    async function finishedLine(headers: Record<string, string>) {
+      runMock.mockResolvedValue({ result: { outcome: "succeeded", memberId: "member-1" } });
+      const logSpy = vi.spyOn(console, "log");
+      await post(body, { headers: { "X-API-Key": "test-api-key", ...headers } });
+      const lines = logSpy.mock.calls.map(([line]) => JSON.parse(line as string));
+      logSpy.mockRestore();
+      return lines.find((e) => e.message === "integration write finished");
+    }
+
+    it("logs Sol Gate's trace and submission ids, and the environment, on the request's log lines", async () => {
+      const line = await finishedLine({ "X-Trace-Id": "trace-1", "X-Submission-Id": "sub-1" });
+      expect(line).toMatchObject({ environment: "staging", traceId: "trace-1", submissionId: "sub-1" });
+    });
+
+    it("starts its own trace without one, but never makes up a submissionId", async () => {
+      const line = await finishedLine({});
+      expect(line.traceId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(line).not.toHaveProperty("submissionId");
+      expect(line).not.toHaveProperty("requestId");
+    });
+  });
+
   it("never returns the internal error message to the caller", async () => {
     runMock.mockResolvedValue({
       result: { outcome: "failed", detail: "Couldn't load the integration's settings" },
