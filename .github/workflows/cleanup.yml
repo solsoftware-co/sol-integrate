@@ -42,3 +42,22 @@ jobs:
         env:
           MAILCHIMP_SANDBOX_API_KEY: ${{ secrets.MAILCHIMP_SANDBOX_API_KEY }}
           MAILCHIMP_SANDBOX_AUDIENCE_ID: ${{ secrets.MAILCHIMP_SANDBOX_AUDIENCE_ID }}
+
+  # Same for the rows the e2e suite appended to the sandbox spreadsheet's E2E
+  # tab (_submissionId e2e-pr<N>-…). Separate again, so a Google problem
+  # blocks neither of the jobs above. Idempotent: nothing to delete is a
+  # success.
+  delete-e2e-sheet-rows:
+    name: Delete e2e Google Sheets rows
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Delete this PR's e2e sheet rows
+        run: node scripts/delete-e2e-sheet-rows.mjs ${{ github.event.pull_request.number }}
+        env:
+          GOOGLE_SHEETS_SANDBOX_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SHEETS_SANDBOX_SERVICE_ACCOUNT }}
+          GOOGLE_SHEETS_SANDBOX_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SANDBOX_SPREADSHEET_ID }}

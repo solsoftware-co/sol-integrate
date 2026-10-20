@@ -1,0 +1,43 @@
+meta {
+  name: Google Sheets Write
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{apiKey}}
+}
+
+body:json {
+  {
+    "clientId": "{{clientId}}",
+    "type": "google_sheets",
+    "integrationId": "{{sheetsIntegrationId}}",
+    "fields": {
+      "values": {
+        "submitterName": "Jane Doe",
+        "submitterEmail": "jane@example.com"
+      }
+    },
+    "context": {
+      "formId": "{{formId}}",
+      "submissionId": "bruno-manual-test"
+    }
+  }
+}
+
+docs {
+  `values` is keyed by the integration's column_mapping keys; the row is
+  written in column_mapping order, blank where a key has no value.
+  `_timestamp` and `_submissionId` are filled in by the service, never taken
+  from `values` (`_submissionId` comes from context.submissionId).
+
+  clientId, sheetsIntegrationId and formId are secret environment vars — set
+  them in Bruno (Environments → the env); they're never committed.
+}

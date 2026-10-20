@@ -20,7 +20,7 @@ app.use("*", async (c, next) => {
 
   await withLogScope({ environment: c.env.ENVIRONMENT, traceId, submissionId }, async () => {
     // Fail fast on a misconfigured ENVIRONMENT, on every route (including
-    // /health) — it decides whether Mailchimp writes are real or mocked, so a
+    // /health) — it decides whether integration writes are real or mocked, so a
     // typo must never fall through to either by default.
     parseEnvironment(c.env.ENVIRONMENT);
     await next();

@@ -16,16 +16,16 @@ headers {
 
 body:json {
   {
-    "clientId": "acme-corp",
+    "clientId": "{{clientId}}",
     "type": "mailchimp",
-    "integrationId": "00000000-0000-0000-0000-000000000000",
+    "integrationId": "{{mailchimpIntegrationId}}",
     "fields": {
       "email": "jane@example.com",
       "mergeFields": { "FNAME": "Jane", "LNAME": "Doe" },
       "tags": ["website-signup"]
     },
     "context": {
-      "formId": "00000000-0000-0000-0000-000000000000",
+      "formId": "{{formId}}",
       "submissionId": "bruno-manual-test"
     }
   }

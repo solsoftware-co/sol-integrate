@@ -2,7 +2,7 @@
 // (wrangler.toml [vars] / --var), so it's parsed here rather than trusted —
 // anything else, including a typo or a missing var, throws instead of
 // silently falling through to some default behavior — here, a real or a
-// mocked Mailchimp write. Same values as sol-notify.
+// mocked integration write. Same values as sol-notify.
 export const environments = ["development", "preview", "staging", "production"] as const;
 
 export type Environment = (typeof environments)[number];

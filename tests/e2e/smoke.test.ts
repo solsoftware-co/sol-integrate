@@ -92,8 +92,8 @@ describe.skipIf(skip)("E2E smoke tests", () => {
 
       if (result.outcome === "skipped" && result.detail === "Integration not found") {
         throw new Error(
-          "The sandbox integrations aren't in sol-api-dev. Run scripts/seed-dev-e2e.sql once in the " +
-            "Neon console (dev branch) — needed again after sol-api's `db:branch:reset`."
+          "The sandbox integrations aren't in sol-api-dev. sol-api seeds them (db/seeds/e2e/) on every merge to its main; " +
+          "to re-seed now, run its 'Seed Dev' workflow from the Actions tab (e.g. after a `db:branch:reset`)."
         );
       }
       expect(result.outcome).toBe("succeeded");
