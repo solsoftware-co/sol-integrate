@@ -30,11 +30,12 @@ jobs:
 
   # Ephemeral per-PR preview Worker (SOL-20), ported from sol-notify's SOL-17.
   # Deployed as wrangler.toml's [env.preview] (ENVIRONMENT=preview: real
-  # Mailchimp writes, public workers.dev URL) under a per-PR name. Its SOL_API
-  # service binding targets sol-api's persistent `dev` Worker (SOL-31), which
-  # only holds sandbox integrations — never a client's audience. The suite
-  # expects the sandbox integrations to already exist there (a one-time
-  # setup, scripts/seed-dev-e2e.sql); seeding isn't this workflow's job.
+  # Mailchimp and Google Sheets writes, public workers.dev URL) under a
+  # per-PR name. Its SOL_API service binding targets sol-api's persistent
+  # `dev` Worker (SOL-31), which only holds sandbox integrations — never a
+  # client's audience or sheet. The suite expects the sandbox integrations
+  # to already exist there: sol-api seeds them (its db/seeds/e2e/), so this
+  # workflow never touches a database.
   #
   # Skipped for PRs from forks: this repo is public, and GitHub withholds
   # secrets from fork PRs, so the deploy could never succeed there anyway.
@@ -133,8 +134,11 @@ jobs:
           API_KEY_STAGING: ${{ secrets.API_KEY_STAGING }}
           MAILCHIMP_SANDBOX_API_KEY: ${{ secrets.MAILCHIMP_SANDBOX_API_KEY }}
           MAILCHIMP_SANDBOX_AUDIENCE_ID: ${{ secrets.MAILCHIMP_SANDBOX_AUDIENCE_ID }}
-          # Test contacts are left in place and archived by cleanup.yml when
-          # this PR closes — see scripts/archive-e2e-contacts.mjs.
+          GOOGLE_SHEETS_SANDBOX_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SHEETS_SANDBOX_SERVICE_ACCOUNT }}
+          GOOGLE_SHEETS_SANDBOX_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SANDBOX_SPREADSHEET_ID }}
+          # Test contacts and sheet rows are left in place and removed by
+          # cleanup.yml when this PR closes — see scripts/archive-e2e-contacts.mjs
+          # and scripts/delete-e2e-sheet-rows.mjs.
           E2E_PR_NUMBER: ${{ github.event.pull_request.number }}
       - name: Post preview URL comment
         if: always()
@@ -147,7 +151,7 @@ jobs:
             const success = '${{ job.status }}' !== 'failure';
             const icon = success ? '🚀' : '❌';
             const body = success
-              ? `<!-- preview-url -->\n## Preview Deployment ${icon}\n**URL**: ${url}\n\nE2E smoke tests passed — real writes to the sandbox Mailchimp audience were made and checked (succeeded, idempotent update, skipped, failed). The test contacts (\`e2e+pr${context.issue.number}-…\`) stay in the sandbox audience until this PR closes, then \`cleanup.yml\` archives them.`
+              ? `<!-- preview-url -->\n## Preview Deployment ${icon}\n**URL**: ${url}\n\nE2E smoke tests passed — real writes to the sandbox Mailchimp audience and the sandbox spreadsheet were made and checked (succeeded, idempotent update, skipped, failed). The test contacts (\`e2e+pr${context.issue.number}-…\`) and sheet rows (\`_submissionId\` \`e2e-pr${context.issue.number}-…\`) stay until this PR closes, then \`cleanup.yml\` removes them.`
               : `<!-- preview-url -->\n## Preview Deployment ${icon}\nDeployment or E2E tests failed. Check the [Actions log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.`;
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,

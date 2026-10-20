@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { integrationRequestSchema } from "../validators/integration.js";
 import { runMailchimpWrite, logWriteOutcome } from "../services/mailchimp-integration.js";
+import { runGoogleSheetsWrite, logGoogleSheetsWriteOutcome } from "../services/google-sheets-integration.js";
 import { parseEnvironment } from "../lib/environment.js";
 import { validationErrorResponse } from "../lib/responses.js";
 import { logger } from "../lib/logger.js";
@@ -22,15 +23,22 @@ integration.post("/", async (c) => {
     return validationErrorResponse(c, "Validation failed", parsed.error.issues);
   }
 
-  // Only member of the union today is the mailchimp envelope — SOL-10 adds a
-  // google_sheets branch here once googleSheetsEnvelopeSchema exists.
   const envelope = parsed.data;
   const solApiEnv = { SOL_API: c.env.SOL_API, SOL_API_KEY: c.env.SOL_API_KEY };
+  const env = { ...solApiEnv, ENVIRONMENT: parseEnvironment(c.env.ENVIRONMENT) };
 
-  const run = await runMailchimpWrite(
-    { ...solApiEnv, ENVIRONMENT: parseEnvironment(c.env.ENVIRONMENT) },
-    envelope
-  );
+  let run;
+  let logOutcome: Promise<void>;
+  switch (envelope.type) {
+    case "mailchimp":
+      run = await runMailchimpWrite(env, envelope);
+      logOutcome = logWriteOutcome(solApiEnv, envelope, run);
+      break;
+    case "google_sheets":
+      run = await runGoogleSheetsWrite(env, envelope);
+      logOutcome = logGoogleSheetsWriteOutcome(solApiEnv, envelope, run);
+      break;
+  }
 
   // A failed write is still a 200, so this line is the only place it shows
   // up as a problem: warn, so a level filter in observability catches it.
@@ -44,7 +52,7 @@ integration.post("/", async (c) => {
     ...(run.errorMessage && { errorMessage: run.errorMessage }),
   });
 
-  c.executionCtx.waitUntil(logWriteOutcome(solApiEnv, envelope, run));
+  c.executionCtx.waitUntil(logOutcome);
 
   return c.json({ success: true, data: run.result }, 200);
 });

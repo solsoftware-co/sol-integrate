@@ -69,12 +69,15 @@ async function solApiFetch<T>(
   return body.data;
 }
 
-// Mirrors sol-api's services/integrations.ts response types. `mailchimp` is
-// null when the base row exists but its child config row doesn't.
+type IntegrationType = "mailchimp" | "google_sheets";
+
+// Mirrors sol-api's services/integrations.ts response types. `mailchimp` /
+// `googleSheets` is null when the base row exists but its child config row
+// doesn't.
 interface IntegrationBase {
   id: string;
   clientId: string;
-  type: string;
+  type: IntegrationType;
   name: string | null;
   description: string | null;
   status: string;
@@ -93,7 +96,29 @@ export interface MailchimpIntegration extends IntegrationBase {
   mailchimp: MailchimpConfig | null;
 }
 
-export type Integration = MailchimpIntegration | IntegrationBase;
+export interface GoogleServiceAccount {
+  email: string;
+  /** A PEM private key, or a whole JSON key file (what clients' credentials were stored as before SOL-50). */
+  key: string;
+}
+
+export interface GoogleSheetsConfig {
+  spreadsheetId: string;
+  /** null: the first sheet. */
+  sheetName: string | null;
+  /** Ordered column keys, e.g. ["_timestamp", "submitterEmail"]. */
+  columnMapping: string[];
+  /** Top-left cell of the table, e.g. "B2"; null means "A1". */
+  tableAnchor: string | null;
+  googleServiceAccount: GoogleServiceAccount;
+}
+
+export interface GoogleSheetsIntegration extends IntegrationBase {
+  type: "google_sheets";
+  googleSheets: GoogleSheetsConfig | null;
+}
+
+export type Integration = MailchimpIntegration | GoogleSheetsIntegration | IntegrationBase;
 
 export async function getIntegration(
   solApi: Fetcher,

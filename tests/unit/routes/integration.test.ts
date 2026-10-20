@@ -13,6 +13,13 @@ vi.mock("../../../src/services/mailchimp-integration.js", async () => {
   };
 });
 
+const sheetsRunMock = vi.fn();
+const sheetsLogMock = vi.fn();
+vi.mock("../../../src/services/google-sheets-integration.js", () => ({
+  runGoogleSheetsWrite: (...args: unknown[]) => sheetsRunMock(...args),
+  logGoogleSheetsWriteOutcome: (...args: unknown[]) => sheetsLogMock(...args),
+}));
+
 const { default: app } = await import("../../../src/index.js");
 
 const SOL_API = {} as Fetcher;
@@ -44,6 +51,8 @@ async function post(payload: unknown, opts: { headers?: Record<string, string>; 
 beforeEach(() => {
   runMock.mockReset();
   logMock.mockReset().mockResolvedValue(undefined);
+  sheetsRunMock.mockReset();
+  sheetsLogMock.mockReset().mockResolvedValue(undefined);
 });
 
 describe("POST /", () => {
@@ -147,5 +156,28 @@ describe("POST /", () => {
     runMock.mockRejectedValue(new Error("boom"));
     const { res } = await post(body);
     expect(res.status).toBe(500);
+  });
+
+  it("routes a google_sheets write to the Sheets service, and logs it in the background", async () => {
+    const sheetsBody = {
+      clientId: "acme-corp",
+      type: "google_sheets",
+      integrationId: "4f1c2a9e-8b3d-4e5f-9a6b-7c8d9e0f1a2b",
+      fields: { values: { submitterName: "Jane" } },
+    };
+    const run = { result: { outcome: "succeeded", url: "https://docs.google.com/spreadsheets/d/s/edit", range: "Sheet1!A2:B2" } };
+    sheetsRunMock.mockResolvedValue(run);
+
+    const { res, waitUntil } = await post(sheetsBody);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, data: run.result });
+    expect(runMock).not.toHaveBeenCalled();
+    expect(sheetsRunMock).toHaveBeenCalledWith(
+      { SOL_API, SOL_API_KEY: "sol-key", ENVIRONMENT: "staging" },
+      expect.objectContaining(sheetsBody)
+    );
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(sheetsLogMock).toHaveBeenCalledWith({ SOL_API, SOL_API_KEY: "sol-key" }, expect.objectContaining(sheetsBody), run);
   });
 });

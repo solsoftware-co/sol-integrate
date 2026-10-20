@@ -61,4 +61,36 @@ describe("integrationRequestSchema", () => {
     expect(result.success).toBe(true);
     expect(result.success && "notification" in result.data).toBe(false);
   });
+
+  describe("google_sheets", () => {
+    const sheets = {
+      clientId: "acme-corp",
+      type: "google_sheets",
+      integrationId: "4f1c2a9e-8b3d-4e5f-9a6b-7c8d9e0f1a2b",
+      fields: { values: { submitterName: "Jane", submitterEmail: "jane@example.com" } },
+      context: { formId: "0b8e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b", submissionId: "sub_123" },
+    };
+
+    it("accepts values keyed by column key", () => {
+      expect(integrationRequestSchema.safeParse(sheets).success).toBe(true);
+    });
+
+    it("accepts empty values — every column is then blank or reserved", () => {
+      expect(integrationRequestSchema.safeParse({ ...sheets, fields: { values: {} } }).success).toBe(true);
+    });
+
+    it("rejects non-string values — Sol Gate sends display strings", () => {
+      expect(integrationRequestSchema.safeParse({ ...sheets, fields: { values: { age: 42 } } }).success).toBe(false);
+    });
+
+    it("rejects a value over Google Sheets' 50,000-character cell limit", () => {
+      const result = integrationRequestSchema.safeParse({ ...sheets, fields: { values: { message: "x".repeat(50_001) } } });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects Mailchimp-shaped fields and unknown fields keys", () => {
+      expect(integrationRequestSchema.safeParse({ ...sheets, fields: { email: "jane@example.com" } }).success).toBe(false);
+      expect(integrationRequestSchema.safeParse({ ...sheets, fields: { values: {}, row: [] } }).success).toBe(false);
+    });
+  });
 });
