@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/solsoftware-co/sol-integrate/compare/v1.2.0...v1.3.0) (2026-10-20)
+
+
+### Features
+
+* add the Google Sheets integration (SOL-10) ([00dbdf9](https://github.com/solsoftware-co/sol-integrate/commit/00dbdf93497b9ca40b6adda04a7c7e373bed6830))
+
 # [1.2.0](https://github.com/solsoftware-co/sol-integrate/compare/v1.1.1...v1.2.0) (2026-10-03)
 
 
